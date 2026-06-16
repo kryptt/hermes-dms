@@ -47,12 +47,17 @@ async fn main() -> ExitCode {
     let shutdown = CancellationToken::new();
     spawn_signal_handler(shutdown.clone());
 
-    // Integration point (post U3/U4): spawn the MCP HTTP server, the Hermes
-    // REST client, and the IPC server concurrently here, all observing
-    // `shutdown`. Until then the daemon parks on the shutdown signal.
-    shutdown.cancelled().await;
+    // Spawns the MCP HTTP server + health loop in the background and runs the
+    // IPC server in the foreground, all observing `shutdown`.
+    let exit = match hermes_dms::daemon::run(config, shutdown).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            error!(error = %e, "daemon exited with error");
+            ExitCode::FAILURE
+        }
+    };
     info!("hermes-dms stopped");
-    ExitCode::SUCCESS
+    exit
 }
 
 fn init_tracing() {

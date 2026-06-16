@@ -127,7 +127,10 @@ impl HermesClient {
         &self,
         session_id: &str,
         message: &str,
-    ) -> Result<impl Stream<Item = ChatEvent>, HermesError> {
+    ) -> Result<impl Stream<Item = ChatEvent> + use<>, HermesError> {
+        // `+ use<>`: the returned stream owns the response body and borrows
+        // neither the arguments nor `self`, so it captures no lifetimes
+        // (edition-2024 RPIT would otherwise capture them all).
         let resp = self
             .http
             .post(self.url(&format!("/api/sessions/{session_id}/chat/stream")))
