@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::Config;
+use crate::desktop::notify;
 use crate::hermes::sse::ChatEvent;
 use crate::hermes::{DESKTOP_TITLE_PREFIX, HermesClient, HermesError, new_desktop_session_id};
 use crate::ipc::protocol::{ClientMessage, DaemonMessage, status};
@@ -21,16 +22,30 @@ const BROADCAST_CAP: usize = 256;
 /// How often to probe Hermes health.
 const HEALTH_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Max length of a launcher response delivered as a desktop notification.
+const NOTIFY_MAX_LEN: usize = 280;
+
 /// Bridges local IPC requests to the Hermes REST API.
 pub struct DaemonHandler {
     hermes: HermesClient,
     /// Last observed Hermes reachability (kept current by the health loop).
     hermes_up: Arc<AtomicBool>,
+    /// Session bus, used to deliver launcher (ephemeral) chat responses as
+    /// desktop notifications independent of whether the panel is open.
+    dbus: Option<zbus::Connection>,
 }
 
 impl DaemonHandler {
-    pub fn new(hermes: HermesClient, hermes_up: Arc<AtomicBool>) -> Self {
-        Self { hermes, hermes_up }
+    pub fn new(
+        hermes: HermesClient,
+        hermes_up: Arc<AtomicBool>,
+        dbus: Option<zbus::Connection>,
+    ) -> Self {
+        Self {
+            hermes,
+            hermes_up,
+            dbus,
+        }
     }
 
     fn status_str(&self) -> &'static str {
@@ -61,6 +76,10 @@ impl DaemonHandler {
         conn: &Conn,
         cancel: &CancellationToken,
     ) {
+        // No session id => launcher (ephemeral). Such responses are also
+        // delivered as a desktop notification so they're visible even when the
+        // panel isn't open.
+        let ephemeral = session_id.is_none();
         let sid = match session_id {
             Some(s) => s,
             None => match self.new_session(None).await {
@@ -68,10 +87,24 @@ impl DaemonHandler {
                 Err(e) => return self.send_error(conn, &request_id, e.to_string()).await,
             },
         };
-        self.stream_chat(&request_id, sid, &message, conn, cancel, true)
+        let final_content = self
+            .stream_chat(&request_id, sid, &message, conn, cancel, true)
             .await;
+
+        if ephemeral
+            && let (Some(content), Some(dbus)) = (final_content, &self.dbus)
+            && !content.is_empty()
+        {
+            let body: String = content.chars().take(NOTIFY_MAX_LEN).collect();
+            if let Err(e) = notify::send(dbus, "Roci", &body, notify::Urgency::Normal, None).await {
+                warn!(error = %e, "failed to deliver launcher response notification");
+            }
+        }
     }
 
+    /// Stream a chat turn, emitting Delta/ToolProgress/ChatComplete over `conn`.
+    /// Returns the final assistant text on success, or `None` if it errored or
+    /// was cancelled (in which case an Error was already sent).
     async fn stream_chat(
         &self,
         request_id: &str,
@@ -80,7 +113,7 @@ impl DaemonHandler {
         conn: &Conn,
         cancel: &CancellationToken,
         allow_reset_recovery: bool,
-    ) {
+    ) -> Option<String> {
         let stream = match self.hermes.chat_stream(&session_id, message).await {
             Ok(s) => s,
             Err(HermesError::SessionNotFound) if allow_reset_recovery => {
@@ -98,10 +131,16 @@ impl DaemonHandler {
                         )
                         .await;
                     }
-                    Err(e) => return self.send_error(conn, request_id, e.to_string()).await,
+                    Err(e) => {
+                        self.send_error(conn, request_id, e.to_string()).await;
+                        return None;
+                    }
                 }
             }
-            Err(e) => return self.send_error(conn, request_id, e.to_string()).await,
+            Err(e) => {
+                self.send_error(conn, request_id, e.to_string()).await;
+                return None;
+            }
         };
 
         tokio::pin!(stream);
@@ -111,7 +150,7 @@ impl DaemonHandler {
             tokio::select! {
                 _ = cancel.cancelled() => {
                     self.send_error(conn, request_id, "cancelled".into()).await;
-                    return;
+                    return None;
                 }
                 item = stream.next() => match item {
                     Some(ChatEvent::Delta(c)) => {
@@ -133,7 +172,7 @@ impl DaemonHandler {
                     Some(ChatEvent::RunCompleted { usage: u }) => usage = u,
                     Some(ChatEvent::Error(m)) => {
                         self.send_error(conn, request_id, m).await;
-                        return;
+                        return None;
                     }
                     Some(ChatEvent::Done) | None => break,
                     Some(_) => {}
@@ -143,10 +182,11 @@ impl DaemonHandler {
 
         conn.send(DaemonMessage::ChatComplete {
             request_id: request_id.to_string(),
-            content: final_content,
+            content: final_content.clone(),
             usage,
         })
         .await;
+        Some(final_content)
     }
 
     async fn send_error(&self, conn: &Conn, request_id: &str, message: String) {
@@ -278,14 +318,15 @@ pub async fn run(config: Config, shutdown: CancellationToken) -> std::io::Result
     let mcp_addr = config.mcp_listen_addr;
     let mcp_tx = broadcast_tx.clone();
     let mcp_shutdown = shutdown.child_token();
+    let mcp_dbus = dbus.clone();
     tokio::spawn(async move {
-        if let Err(e) = crate::mcp::serve(mcp_addr, dbus, mcp_tx, mcp_shutdown).await {
+        if let Err(e) = crate::mcp::serve(mcp_addr, mcp_dbus, mcp_tx, mcp_shutdown).await {
             error!(error = %e, "MCP server exited with error");
         }
     });
 
     // Foreground: IPC server.
-    let handler = Arc::new(DaemonHandler::new(hermes, hermes_up));
+    let handler = Arc::new(DaemonHandler::new(hermes, hermes_up, dbus));
     let ipc = IpcServer::new(handler, broadcast_tx);
     ipc.run(config.socket_path.clone(), shutdown).await
 }
@@ -332,7 +373,11 @@ mod tests {
 
         let hermes = HermesClient::new(server.uri(), "k").unwrap();
         let (btx, _) = broadcast::channel(16);
-        let handler = Arc::new(DaemonHandler::new(hermes, Arc::new(AtomicBool::new(true))));
+        let handler = Arc::new(DaemonHandler::new(
+            hermes,
+            Arc::new(AtomicBool::new(true)),
+            None,
+        ));
         let shutdown = CancellationToken::new();
         let socket = std::env::temp_dir().join(format!(
             "hermes-dms-daemon-test-{}.sock",
