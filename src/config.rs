@@ -14,9 +14,11 @@ use serde::Deserialize;
 /// desktop tools are only reachable over the cluster-internal network.
 pub const DEFAULT_MCP_LISTEN_ADDR: &str = "10.20.0.3:9721";
 
-/// Hermes API server default. The reachable address from bare-metal rh-anine
-/// must be confirmed at deploy time (ClusterIP DNAT vs. pod IP vs. LAN IP).
-pub const DEFAULT_HERMES_API_URL: &str = "http://hermes.ai.svc.cluster.local:8642";
+/// Hermes API server default — the Traefik route `hermes.hr-home.xyz/direct`
+/// (stripPrefix → hermes:8642). Resolvable from the bare-metal workstation via
+/// OPNsense; authenticated with the API key. Client paths (`/api/...`,
+/// `/health`) are appended to this base, becoming `/direct/api/...` etc.
+pub const DEFAULT_HERMES_API_URL: &str = "https://hermes.hr-home.xyz/direct";
 
 /// Resolved, validated configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]

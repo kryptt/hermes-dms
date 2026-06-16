@@ -27,8 +27,9 @@ one agent identity, memory, and skill set.
 ```
 
 This repo contains the **daemon** (Rust, `src/`) and the two **DankMaterialShell
-QML plugins** (`dms-plugins/`). The Fleet `NetworkPolicy` lives in the hr-fleet
-repo (`fleet/ai/hermes-dms-netpol.yaml`).
+QML plugins** (`dms-plugins/`). The Hermes-side wiring (an IngressRoute exposing
+the Hermes API to the workstation, plus its NetworkPolicy) lives in the hr-fleet
+repo (`fleet/ai/hermes-api-ingress.yaml`).
 
 ## Build & install
 
@@ -73,7 +74,7 @@ optional except the API key.
 ```toml
 # Hermes platform API server. The address reachable from bare-metal rh-anine
 # must be confirmed at deploy time (see "Deployment notes").
-hermes_api_url  = "http://hermes.ai.svc.cluster.local:8642"
+hermes_api_url  = "https://hermes.hr-home.xyz/direct"
 
 # Same value as platforms.api_server.key in the Hermes pod's /opt/data/config.yaml.
 # Prefer the HERMES_API_KEY env var (systemd EnvironmentFile) to keep it off NFS.
@@ -99,13 +100,14 @@ hermes-dms-ctl stream                 # full-duplex JSON-lines bridge (panel)
 
 ## Security model
 
-- The MCP endpoint is fronted by Traefik at `https://hermes.hr-home.xyz/mcp`
-  (an IngressRoute → a Service whose endpoints point at the bare-metal daemon)
-  and protected by a **Bearer token** (`mcp_auth_token`). Hermes sends the token
-  via `mcp_servers.desktop.headers.Authorization`. The daemon still binds the
-  VLAN20 IP; the token is the primary defense now that the endpoint is
-  LAN-reachable. `desktop_launch_app` runs arbitrary commands — an accepted risk
-  gated by Hermes's single-user Telegram restriction (see the plan's risk table).
+- The daemon has **no k8s presence**. Hermes reaches the MCP server by dialing
+  the workstation directly at `http://10.20.0.3:9721/mcp` — the host:port set in
+  Hermes's `mcp_servers.desktop` config (config-based registration). The endpoint
+  is protected by a **Bearer token** (`mcp_auth_token`); Hermes sends it via
+  `mcp_servers.desktop.headers.Authorization`. The daemon reaches the Hermes API
+  in the other direction via `https://hermes.hr-home.xyz/direct` (a Traefik
+  route that stripPrefixes `/direct` → `hermes:8642`). `desktop_launch_app` runs arbitrary commands —
+  an accepted risk gated by Hermes's single-user Telegram restriction.
 - `desktop_launch_app` never goes through a shell (`Command::new(cmd).args(...)`,
   no `sh -c`, no expansion).
 - The MCP server's `allowed_hosts` is derived from the bind address (the rmcp

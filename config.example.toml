@@ -3,9 +3,9 @@
 # All fields are optional except the API key (which may instead be supplied via
 # the HERMES_API_KEY environment variable).
 
-# Hermes platform API server. Confirm the reachable address from bare-metal
-# rh-anine at deploy time (ClusterIP DNS vs. pod IP vs. LAN IP).
-hermes_api_url  = "http://hermes.ai.svc.cluster.local:8642"
+# Hermes platform API server — the Traefik /direct route on hermes.hr-home.xyz
+# (stripPrefix -> hermes:8642), resolvable from the workstation via OPNsense.
+hermes_api_url  = "https://hermes.hr-home.xyz/direct"
 
 # Same value as platforms.api_server.key in the Hermes pod's config.
 # Prefer setting HERMES_API_KEY in the environment instead of here.
