@@ -22,7 +22,7 @@ QtObject {
                 icon: "material:smart_toy",
                 comment: "Type a message to send to the desktop agent",
                 action: "noop",
-                categories: ["Hermes"]
+                categories: ["Hermes Launcher"]
             }];
         }
         return [{
@@ -30,7 +30,7 @@ QtObject {
             icon: "material:smart_toy",
             comment: "Send to Roci · the reply arrives as a desktop notification",
             action: "ask:" + q,
-            categories: ["Hermes"],
+            categories: ["Hermes Launcher"],
             _preScored: 1000
         }];
     }

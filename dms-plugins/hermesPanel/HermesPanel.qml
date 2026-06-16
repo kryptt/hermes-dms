@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Wayland
 import Quickshell.Io
 import qs.Common
+import qs.Services
 import qs.Widgets
 import qs.Modules.Plugins
 
@@ -27,6 +28,9 @@ PluginComponent {
         property bool isVisible: false
 
         function show() {
+            // Open on the monitor with the focused window/workspace, not always
+            // screen 0 (CompositorService is niri-aware via NiriService.currentOutput).
+            screen = CompositorService.getFocusedScreen();
             visible = true;
             isVisible = true;
             HermesService.popoutVisible = true;
@@ -50,7 +54,7 @@ PluginComponent {
         property real animOpacity: 0.0
 
         visible: isVisible || hideAnim.running || scaleAnim.running
-        screen: Quickshell.screens.length > 0 ? Quickshell.screens[0] : null
+        screen: CompositorService.getFocusedScreen()
         color: "transparent"
 
         anchors.bottom: true
