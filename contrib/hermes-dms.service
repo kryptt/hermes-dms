@@ -1,0 +1,20 @@
+[Unit]
+Description=Hermes desktop bridge daemon (DankMaterialShell)
+Documentation=https://github.com/kryptt/hermes-dms
+# Start once the graphical session is up; the MCP server must outlive the
+# panel, so this is an independent service, not a child of the QML plugin.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/hermes-dms
+Restart=on-failure
+RestartSec=2
+# Optional: supply HERMES_API_KEY here to keep the secret out of the
+# NFS-mounted ~/.config/hermes-dms/config.toml. The leading "-" makes the
+# file optional. Mode this file 0600.
+EnvironmentFile=-%h/.config/hermes-dms/env
+
+[Install]
+WantedBy=graphical-session.target

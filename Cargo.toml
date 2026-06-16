@@ -1,0 +1,57 @@
+[package]
+name = "hermes-dms"
+version = "0.1.0"
+edition = "2024"
+description = "Compositor-native Hermes bridge daemon for DankMaterialShell on Niri"
+license = "MIT"
+
+[[bin]]
+name = "hermes-dms"
+path = "src/main.rs"
+
+[[bin]]
+name = "hermes-dms-ctl"
+path = "src/bin/ctl.rs"
+
+[lib]
+name = "hermes_dms"
+path = "src/lib.rs"
+
+[dependencies]
+# MCP server (StreamableHTTP transport) + tool macros
+rmcp = { version = "1.7", features = ["server", "macros", "transport-streamable-http-server"] }
+schemars = "1"
+
+# HTTP / async runtime
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+
+# SSE parsing for the Hermes chat stream
+eventsource-stream = "0.2"
+futures-util = "0.3"
+
+# Desktop backends
+zbus = { version = "5", features = ["tokio"] }
+niri-ipc = "~26.4"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CLI / observability / misc
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+strip = true
