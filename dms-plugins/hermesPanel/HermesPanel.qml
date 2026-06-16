@@ -1,10 +1,6 @@
 import QtQuick
-import QtQuick.Layouts
-import Quickshell
-import Quickshell.Wayland
 import Quickshell.Io
 import qs.Common
-import qs.Services
 import qs.Widgets
 import qs.Modules.Plugins
 
@@ -13,71 +9,38 @@ PluginComponent {
 
     layerNamespacePlugin: "hermesPanel"
 
-    // Toggle the panel from a keyboard shortcut: `dms ipc call hermesPanel toggle`.
+    // Use DMS's managed popout: it anchors to the bar pill (above a bottom bar,
+    // below a top bar), follows the focused monitor, and handles keyboard focus
+    // + click-away/Escape close. Sized to the chat.
+    popoutWidth: 660
+    popoutHeight: 740
+
+    // Keyboard shortcut: bind a key to `dms ipc call hermesPanel toggle`.
+    // triggerPopout() positions the popout at the pill exactly like a click.
     IpcHandler {
         function toggle(): string {
-            hermesPanel.toggle();
-            return hermesPanel.isVisible ? "opened" : "closed";
+            root.triggerPopout();
+            return "toggled";
         }
         target: "hermesPanel"
     }
 
-    PanelWindow {
-        id: hermesPanel
-
-        property bool isVisible: false
-
-        function show() {
-            // Open on the monitor with the focused window/workspace, not always
-            // screen 0 (CompositorService is niri-aware via NiriService.currentOutput).
-            screen = CompositorService.getFocusedScreen();
-            visible = true;
-            isVisible = true;
-            HermesService.popoutVisible = true;
-            animScale = 1.0;
-            animOpacity = 1.0;
-        }
-        function hide() {
-            isVisible = false;
-            HermesService.popoutVisible = false;
-            animScale = 0.92;
-            animOpacity = 0.0;
-        }
-        function toggle() {
-            if (isVisible)
-                hide();
-            else
-                show();
-        }
-
-        property real animScale: 0.92
-        property real animOpacity: 0.0
-
-        visible: isVisible || hideAnim.running || scaleAnim.running
-        screen: CompositorService.getFocusedScreen()
-        color: "transparent"
-
-        anchors.bottom: true
-
-        WlrLayershell.layer: WlrLayershell.Top
-        WlrLayershell.namespace: "dms:hermes"
-        WlrLayershell.exclusiveZone: 0
-        WlrLayershell.keyboardFocus: isVisible ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
-        WlrLayershell.margins.bottom: 44
-
-        implicitWidth: 660
-        implicitHeight: 740
-
+    popoutContent: Component {
         Item {
-            id: animContainer
-            anchors.fill: parent
-            anchors.margins: 10
-            scale: hermesPanel.animScale
-            opacity: hermesPanel.animOpacity
-            transformOrigin: Item.Bottom
+            id: popoutRoot
+
+            // PluginPopout injects a close function here once the content loads.
+            property var closePopout
+
+            implicitWidth: 660
+            implicitHeight: 740
+
+            // Best-effort: lets HermesService suppress duplicate desktop
+            // notifications while the panel is on screen.
+            onVisibleChanged: HermesService.popoutVisible = visible
 
             // Translucent backdrop so the chat stays legible over whatever's
-            // behind it (e.g. a terminal). Uses the DMS popout convention
+            // behind it (e.g. a terminal). DMS popout convention
             // (surfaceContainer at the user's popupTransparency setting).
             Rectangle {
                 anchors.fill: parent
@@ -88,29 +51,9 @@ PluginComponent {
             }
 
             HermesPanelChat {
-                id: hermesChat
                 anchors.fill: parent
-                onEscapePressed: hermesPanel.hide()
-            }
-        }
-
-        Behavior on animScale {
-            NumberAnimation {
-                id: scaleAnim
-                duration: 250
-                easing.type: Easing.OutCubic
-            }
-        }
-
-        Behavior on animOpacity {
-            NumberAnimation {
-                id: hideAnim
-                duration: 200
-                easing.type: Easing.OutCubic
-                onRunningChanged: {
-                    if (!running && !hermesPanel.isVisible)
-                        hermesPanel.visible = false;
-                }
+                onEscapePressed: if (popoutRoot.closePopout)
+                    popoutRoot.closePopout()
             }
         }
     }
@@ -143,9 +86,5 @@ PluginComponent {
                 anchors.horizontalCenter: parent.horizontalCenter
             }
         }
-    }
-
-    pillClickAction: function () {
-        hermesPanel.toggle();
     }
 }
