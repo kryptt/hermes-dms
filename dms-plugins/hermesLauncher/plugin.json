@@ -1,0 +1,16 @@
+{
+    "$schema": "https://github.com/AvengeMedia/DankMaterialShell/raw/refs/heads/master/PLUGINS/plugin-schema.json",
+    "id": "hermesLauncher",
+    "name": "Hermes Launcher",
+    "description": "Send quick one-shot commands to the Hermes (Roci) desktop agent",
+    "version": "0.1.0",
+    "license": "MIT",
+    "author": "kryptt",
+    "icon": "smart_toy",
+    "type": "launcher",
+    "capabilities": ["ai"],
+    "component": "./HermesLauncher.qml",
+    "trigger": "@",
+    "requires_dms": ">=1.4.0",
+    "requires": ["hermes-dms-ctl"]
+}

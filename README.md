@@ -26,9 +26,9 @@ one agent identity, memory, and skill set.
 └──────────────────────────────────────────────────────────┘
 ```
 
-This repo is the **daemon** half (Rust). The DankMaterialShell QML plugins
-(`hermesPanel`, `hermesLauncher`) and the Fleet `NetworkPolicy` live elsewhere
-(see the plan in the hr-fleet repo).
+This repo contains the **daemon** (Rust, `src/`) and the two **DankMaterialShell
+QML plugins** (`dms-plugins/`). The Fleet `NetworkPolicy` lives in the hr-fleet
+repo (`fleet/ai/hermes-dms-netpol.yaml`).
 
 ## Build & install
 
@@ -43,6 +43,27 @@ Run as a systemd user service:
 cp contrib/hermes-dms.service ~/.config/systemd/user/
 systemctl --user enable --now hermes-dms.service
 ```
+
+## DankMaterialShell plugins
+
+Two QML plugins live in `dms-plugins/`:
+
+- **hermesPanel** (`type: widget`) — a floating chat `PanelWindow` with a
+  dankbar pill and a keyboard-toggle `IpcHandler` (`dms ipc call hermesPanel
+  toggle`). It runs `hermes-dms-ctl stream` as a persistent relay, streaming
+  deltas/tool-progress and showing connection status.
+- **hermesLauncher** (`type: launcher`, trigger `@`) — fire-and-forget one-shot
+  commands; the reply arrives as a desktop notification delivered by the daemon.
+
+Install by symlinking them into the DMS plugins directory, then enable them in
+DankMaterialShell's plugin settings:
+
+```bash
+ln -sfn "$PWD/dms-plugins/hermesPanel"    ~/.config/DankMaterialShell/plugins/hermesPanel
+ln -sfn "$PWD/dms-plugins/hermesLauncher" ~/.config/DankMaterialShell/plugins/hermesLauncher
+```
+
+Both require `hermes-dms-ctl` on `PATH` and a running daemon.
 
 ## Configuration
 
@@ -97,9 +118,10 @@ hermes-dms-ctl stream                 # full-duplex JSON-lines bridge (panel)
 - **Single-window screenshots** capture the focused *output* (monitor). Pixel
   accurate per-window cropping is deferred (P1) — niri's per-window geometry is
   workspace-view-relative, not the global coordinates `grim -g` expects.
-- **Launcher D-Bus response delivery** (the launcher's reply arriving as a
-  desktop notification) is part of the QML launcher plugin work (U6), not the
-  daemon core.
+- **Live DMS validation pending:** the QML plugins are written against the
+  proven dms-agent/commandRunner patterns but have not yet been loaded in a
+  running DankMaterialShell — enable them and verify the panel toggle, streaming,
+  and launcher notification end-to-end.
 - **`config.toml` on NFS:** `~/.config` is NFS-mounted from hr-main on rh-anine.
   Only rh-anine runs the daemon, so there's no collision, but prefer the
   `HERMES_API_KEY` env var to keep the secret off NFS.

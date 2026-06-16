@@ -1,0 +1,15 @@
+{
+    "$schema": "https://github.com/AvengeMedia/DankMaterialShell/raw/refs/heads/master/PLUGINS/plugin-schema.json",
+    "id": "hermesPanel",
+    "name": "Hermes Panel",
+    "description": "Floating chat panel for the Hermes (Roci) desktop agent",
+    "version": "0.1.0",
+    "license": "MIT",
+    "author": "kryptt",
+    "icon": "smart_toy",
+    "type": "widget",
+    "capabilities": ["slideout", "ai"],
+    "component": "./HermesPanel.qml",
+    "requires_dms": ">=1.4.0",
+    "requires": ["hermes-dms-ctl"]
+}
