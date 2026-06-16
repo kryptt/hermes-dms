@@ -1,0 +1,18 @@
+# hermes-dms configuration example.
+# Copy to ~/.config/hermes-dms/config.toml and chmod 0600.
+# All fields are optional except the API key (which may instead be supplied via
+# the HERMES_API_KEY environment variable).
+
+# Hermes platform API server. Confirm the reachable address from bare-metal
+# rh-anine at deploy time (ClusterIP DNS vs. pod IP vs. LAN IP).
+hermes_api_url  = "http://hermes.ai.svc.cluster.local:8642"
+
+# Same value as platforms.api_server.key in the Hermes pod's config.
+# Prefer setting HERMES_API_KEY in the environment instead of here.
+hermes_api_key  = "replace-me"
+
+# Bind the MCP server to rh-anine's VLAN20 IP, not 0.0.0.0.
+mcp_listen_addr = "10.20.0.3:9721"
+
+# Local tmpfs socket (never NFS).
+socket_path     = "/run/user/1000/hermes-dms.sock"
