@@ -74,7 +74,7 @@ impl<H: MessageHandler> IpcServer<H> {
     ) -> std::io::Result<()> {
         prepare_socket_path(&socket_path).await?;
         let listener = UnixListener::bind(&socket_path)?;
-        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
+        tokio::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).await?;
         info!(path = %socket_path.display(), "IPC socket listening");
 
         loop {

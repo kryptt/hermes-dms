@@ -20,8 +20,11 @@ pub fn new_desktop_session_id() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let rand = Uuid::new_v4().simple().to_string();
-    format!("{DESKTOP_SESSION_PREFIX}{ts}_{}", &rand[..8])
+    // First 4 bytes of a v4 UUID → 8 hex chars. Formatting the bytes directly
+    // avoids slicing a String (`&s[..8]`), which would panic on a short string.
+    let rand = Uuid::new_v4();
+    let [b0, b1, b2, b3, ..] = rand.into_bytes();
+    format!("{DESKTOP_SESSION_PREFIX}{ts}_{b0:02x}{b1:02x}{b2:02x}{b3:02x}")
 }
 
 /// Whether an id was minted by this daemon.
