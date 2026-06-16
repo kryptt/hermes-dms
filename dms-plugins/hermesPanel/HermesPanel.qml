@@ -76,6 +76,17 @@ PluginComponent {
             opacity: hermesPanel.animOpacity
             transformOrigin: Item.Bottom
 
+            // Translucent backdrop so the chat stays legible over whatever's
+            // behind it (e.g. a terminal). Uses the DMS popout convention
+            // (surfaceContainer at the user's popupTransparency setting).
+            Rectangle {
+                anchors.fill: parent
+                radius: 20
+                color: Theme.panelBackground()
+                border.width: 1
+                border.color: Theme.outlineVariant
+            }
+
             HermesPanelChat {
                 id: hermesChat
                 anchors.fill: parent
