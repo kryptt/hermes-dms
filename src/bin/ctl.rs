@@ -6,7 +6,7 @@
 //!   stream            long-lived: subscribe + relay JSON-lines both ways
 //!   status            one-shot: print daemon/Hermes status, exit
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -16,7 +16,10 @@ use hermes_dms::ipc::protocol::{ClientMessage, DaemonMessage};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[derive(Parser)]
-#[command(name = "hermes-dms-ctl", about = "Control client for the hermes-dms daemon")]
+#[command(
+    name = "hermes-dms-ctl",
+    about = "Control client for the hermes-dms daemon"
+)]
 struct Cli {
     /// Path to the daemon's Unix socket (default: $XDG_RUNTIME_DIR/hermes-dms.sock).
     #[arg(long, global = true)]
@@ -66,11 +69,7 @@ fn new_request_id() -> String {
 }
 
 /// One-shot chat: print streamed deltas as they arrive, exit on completion.
-async fn run_chat(
-    socket: &PathBuf,
-    message: String,
-    session: Option<String>,
-) -> Result<(), String> {
+async fn run_chat(socket: &Path, message: String, session: Option<String>) -> Result<(), String> {
     let mut client = IpcClient::connect(socket)
         .await
         .map_err(|e| format!("connecting to daemon socket: {e}"))?;
@@ -89,23 +88,37 @@ async fn run_chat(
         match client.next_message().await.map_err(|e| e.to_string())? {
             None => return Err("daemon closed the connection before completing".into()),
             Some(msg) => match msg {
-                DaemonMessage::Delta { request_id: id, content } if id == request_id => {
-                    stdout.write_all(content.as_bytes()).await.map_err(|e| e.to_string())?;
+                DaemonMessage::Delta {
+                    request_id: id,
+                    content,
+                } if id == request_id => {
+                    stdout
+                        .write_all(content.as_bytes())
+                        .await
+                        .map_err(|e| e.to_string())?;
                     stdout.flush().await.map_err(|e| e.to_string())?;
                 }
-                DaemonMessage::ChatComplete { request_id: id, content, .. } if id == request_id => {
+                DaemonMessage::ChatComplete {
+                    request_id: id,
+                    content,
+                    ..
+                } if id == request_id => {
                     // If nothing was streamed, print the final content; always
                     // end with a newline.
                     if !content.is_empty() {
-                        stdout.write_all(content.as_bytes()).await.map_err(|e| e.to_string())?;
+                        stdout
+                            .write_all(content.as_bytes())
+                            .await
+                            .map_err(|e| e.to_string())?;
                     }
                     stdout.write_all(b"\n").await.map_err(|e| e.to_string())?;
                     stdout.flush().await.map_err(|e| e.to_string())?;
                     return Ok(());
                 }
-                DaemonMessage::Error { request_id: id, message }
-                    if id.as_deref() == Some(request_id.as_str()) || id.is_none() =>
-                {
+                DaemonMessage::Error {
+                    request_id: id,
+                    message,
+                } if id.as_deref() == Some(request_id.as_str()) || id.is_none() => {
                     return Err(message);
                 }
                 _ => {} // tool_progress, broadcasts, other requests: ignore
@@ -115,7 +128,7 @@ async fn run_chat(
 }
 
 /// Full-duplex bridge: stdin JSON-lines → socket, socket events → stdout.
-async fn run_stream(socket: &PathBuf) -> Result<(), String> {
+async fn run_stream(socket: &Path) -> Result<(), String> {
     let mut client = IpcClient::connect(socket)
         .await
         .map_err(|e| format!("connecting to daemon socket: {e}"))?;
@@ -147,7 +160,10 @@ async fn run_stream(socket: &PathBuf) -> Result<(), String> {
     // socket → stdout (one JSON object per line, verbatim)
     let mut stdout = tokio::io::stdout();
     while let Some(line) = reader.next_line().await.map_err(|e| e.to_string())? {
-        stdout.write_all(line.as_bytes()).await.map_err(|e| e.to_string())?;
+        stdout
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         stdout.write_all(b"\n").await.map_err(|e| e.to_string())?;
         stdout.flush().await.map_err(|e| e.to_string())?;
     }
@@ -157,13 +173,15 @@ async fn run_stream(socket: &PathBuf) -> Result<(), String> {
 }
 
 /// One-shot status query.
-async fn run_status(socket: &PathBuf) -> Result<(), String> {
+async fn run_status(socket: &Path) -> Result<(), String> {
     let mut client = IpcClient::connect(socket)
         .await
         .map_err(|e| format!("connecting to daemon socket: {e}"))?;
     let request_id = new_request_id();
     client
-        .send(&ClientMessage::Status { request_id: request_id.clone() })
+        .send(&ClientMessage::Status {
+            request_id: request_id.clone(),
+        })
         .await
         .map_err(|e| format!("requesting status: {e}"))?;
 

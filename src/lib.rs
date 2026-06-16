@@ -5,7 +5,9 @@
 //! server (local QML plugins and `hermes-dms-ctl`).
 
 pub mod config;
+pub mod desktop;
 pub mod hermes;
 pub mod ipc;
+pub mod mcp;
 
 pub use config::Config;

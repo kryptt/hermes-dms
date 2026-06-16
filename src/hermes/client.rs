@@ -32,7 +32,10 @@ pub struct HermesClient {
 }
 
 impl HermesClient {
-    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Result<Self, HermesError> {
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+    ) -> Result<Self, HermesError> {
         // No global request timeout — the chat stream is long-lived. Per-call
         // timeouts are applied to the non-streaming requests instead.
         let http = reqwest::Client::builder()
@@ -215,11 +218,17 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/sessions"))
-            .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error": {"message": "Invalid API key"}})))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(json!({"error": {"message": "Invalid API key"}})),
+            )
             .mount(&server)
             .await;
         let client = HermesClient::new(server.uri(), "bad").unwrap();
-        assert!(matches!(client.list_sessions().await, Err(HermesError::Auth)));
+        assert!(matches!(
+            client.list_sessions().await,
+            Err(HermesError::Auth)
+        ));
     }
 
     #[tokio::test]
@@ -227,7 +236,10 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/sessions/desktop_gone/chat/stream"))
-            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"error": {"message": "no session"}})))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(json!({"error": {"message": "no session"}})),
+            )
             .mount(&server)
             .await;
         let client = HermesClient::new(server.uri(), "k").unwrap();
@@ -291,8 +303,14 @@ mod tests {
             .collect();
         assert_eq!(text, "Hello");
         // The keepalive comment produced no event.
-        assert!(events.contains(&ChatEvent::AssistantCompleted { content: "Hello".into() }));
+        assert!(events.contains(&ChatEvent::AssistantCompleted {
+            content: "Hello".into()
+        }));
         assert!(events.contains(&ChatEvent::Done));
-        assert!(events.iter().any(|e| matches!(e, ChatEvent::ToolProgress { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ChatEvent::ToolProgress { .. }))
+        );
     }
 }

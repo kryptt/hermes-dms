@@ -193,7 +193,10 @@ mod tests {
         let cfg = Config::resolve(raw, None).unwrap();
         assert_eq!(cfg.hermes_api_url, "http://10.43.0.5:8642");
         assert_eq!(cfg.hermes_api_key, "abc123");
-        assert_eq!(cfg.socket_path, PathBuf::from("/run/user/1000/hermes-dms.sock"));
+        assert_eq!(
+            cfg.socket_path,
+            PathBuf::from("/run/user/1000/hermes-dms.sock")
+        );
     }
 
     /// Unknown keys in the config file are rejected (typo protection).

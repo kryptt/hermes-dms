@@ -16,11 +16,18 @@ pub enum ChatEvent {
     /// Incremental assistant text.
     Delta(String),
     /// Tool lifecycle / reasoning progress. `status` is the raw event name.
-    ToolProgress { tool_name: String, status: String },
+    ToolProgress {
+        tool_name: String,
+        status: String,
+    },
     /// Final assistant message text.
-    AssistantCompleted { content: String },
+    AssistantCompleted {
+        content: String,
+    },
     /// Run finished; carries the opaque usage object if present.
-    RunCompleted { usage: Option<Value> },
+    RunCompleted {
+        usage: Option<Value>,
+    },
     /// Server-reported error mid-run.
     Error(String),
     /// Terminal sentinel.
@@ -30,7 +37,10 @@ pub enum ChatEvent {
 }
 
 fn str_field(json: &Value, key: &str) -> String {
-    json.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+    json.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Map a raw SSE (event name, data) pair to a [`ChatEvent`]. Malformed JSON
@@ -142,6 +152,9 @@ mod tests {
 
     #[test]
     fn malformed_json_degrades_to_empty() {
-        assert_eq!(parse_event("assistant.delta", "not json"), ChatEvent::Delta(String::new()));
+        assert_eq!(
+            parse_event("assistant.delta", "not json"),
+            ChatEvent::Delta(String::new())
+        );
     }
 }

@@ -67,7 +67,11 @@ impl<H: MessageHandler> IpcServer<H> {
     /// Bind the socket and serve until `shutdown` fires. Removes a stale socket
     /// from a previous run, refuses to clobber a live one, and cleans up the
     /// socket file on exit.
-    pub async fn run(self, socket_path: PathBuf, shutdown: CancellationToken) -> std::io::Result<()> {
+    pub async fn run(
+        self,
+        socket_path: PathBuf,
+        shutdown: CancellationToken,
+    ) -> std::io::Result<()> {
         prepare_socket_path(&socket_path).await?;
         let listener = UnixListener::bind(&socket_path)?;
         std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
@@ -112,7 +116,10 @@ async fn prepare_socket_path(path: &Path) -> std::io::Result<()> {
     match UnixStream::connect(path).await {
         Ok(_) => Err(std::io::Error::new(
             std::io::ErrorKind::AddrInUse,
-            format!("a hermes-dms daemon is already listening on {}", path.display()),
+            format!(
+                "a hermes-dms daemon is already listening on {}",
+                path.display()
+            ),
         )),
         Err(_) => {
             warn!(path = %path.display(), "removing stale socket from previous run");
@@ -255,7 +262,11 @@ mod tests {
     impl MessageHandler for Echo {
         async fn handle(&self, msg: ClientMessage, conn: Conn, cancel: CancellationToken) {
             match msg {
-                ClientMessage::Chat { request_id, message, .. } => {
+                ClientMessage::Chat {
+                    request_id,
+                    message,
+                    ..
+                } => {
                     conn.send(DaemonMessage::Delta {
                         request_id: request_id.clone(),
                         content: message.clone(),
@@ -349,8 +360,12 @@ mod tests {
             },
         )
         .await;
-        assert!(matches!(read_msg(&mut c).await, DaemonMessage::Delta { content, .. } if content == "hello"));
-        assert!(matches!(read_msg(&mut c).await, DaemonMessage::ChatComplete { content, .. } if content == "hello"));
+        assert!(
+            matches!(read_msg(&mut c).await, DaemonMessage::Delta { content, .. } if content == "hello")
+        );
+        assert!(
+            matches!(read_msg(&mut c).await, DaemonMessage::ChatComplete { content, .. } if content == "hello")
+        );
         shutdown.cancel();
     }
 
@@ -359,10 +374,22 @@ mod tests {
         let (path, shutdown, _btx) = start_server();
         let mut c = connect(&path).await;
         c.write_all(b"{not json}\n").await.unwrap();
-        assert!(matches!(read_msg(&mut c).await, DaemonMessage::Error { .. }));
+        assert!(matches!(
+            read_msg(&mut c).await,
+            DaemonMessage::Error { .. }
+        ));
         // The connection is still usable afterwards.
-        send_msg(&mut c, &ClientMessage::Status { request_id: "s1".into() }).await;
-        assert!(matches!(read_msg(&mut c).await, DaemonMessage::Status { .. }));
+        send_msg(
+            &mut c,
+            &ClientMessage::Status {
+                request_id: "s1".into(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            read_msg(&mut c).await,
+            DaemonMessage::Status { .. }
+        ));
         shutdown.cancel();
     }
 
@@ -383,12 +410,24 @@ mod tests {
         })
         .unwrap();
 
-        assert!(matches!(read_msg(&mut sub).await, DaemonMessage::Toast { .. }));
+        assert!(matches!(
+            read_msg(&mut sub).await,
+            DaemonMessage::Toast { .. }
+        ));
 
         // The non-subscriber should NOT receive the toast; a subsequent status
         // request must be the first thing it reads.
-        send_msg(&mut plain, &ClientMessage::Status { request_id: "s".into() }).await;
-        assert!(matches!(read_msg(&mut plain).await, DaemonMessage::Status { .. }));
+        send_msg(
+            &mut plain,
+            &ClientMessage::Status {
+                request_id: "s".into(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            read_msg(&mut plain).await,
+            DaemonMessage::Status { .. }
+        ));
         shutdown.cancel();
     }
 
@@ -396,10 +435,22 @@ mod tests {
     async fn cancel_interrupts_in_flight_request() {
         let (path, shutdown, _btx) = start_server();
         let mut c = connect(&path).await;
-        send_msg(&mut c, &ClientMessage::SessionList { request_id: "blk".into() }).await;
+        send_msg(
+            &mut c,
+            &ClientMessage::SessionList {
+                request_id: "blk".into(),
+            },
+        )
+        .await;
         // Not completed yet; cancel it.
         tokio::time::sleep(Duration::from_millis(30)).await;
-        send_msg(&mut c, &ClientMessage::Cancel { request_id: "blk".into() }).await;
+        send_msg(
+            &mut c,
+            &ClientMessage::Cancel {
+                request_id: "blk".into(),
+            },
+        )
+        .await;
         assert!(matches!(
             read_msg(&mut c).await,
             DaemonMessage::Error { message, .. } if message == "cancelled"

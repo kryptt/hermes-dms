@@ -9,7 +9,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 #[derive(Parser)]
-#[command(name = "hermes-dms", about = "Hermes desktop bridge daemon for DankMaterialShell")]
+#[command(
+    name = "hermes-dms",
+    about = "Hermes desktop bridge daemon for DankMaterialShell"
+)]
 struct Cli {
     /// Path to the TOML config file (default: ~/.config/hermes-dms/config.toml).
     #[arg(long)]
