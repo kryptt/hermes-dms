@@ -14,5 +14,15 @@ hermes_api_key  = "replace-me"
 # Bind the MCP server to rh-anine's VLAN20 IP, not 0.0.0.0.
 mcp_listen_addr = "10.20.0.3:9721"
 
+# Bearer token required on the MCP endpoint. Set this when the MCP server is
+# fronted by Traefik (https://hermes.hr-home.xyz/mcp); Hermes sends it via
+# mcp_servers.desktop.headers.Authorization. May also be supplied via the
+# MCP_AUTH_TOKEN env var. Omit to leave the endpoint unauthenticated.
+mcp_auth_token  = "replace-with-a-long-random-token"
+
+# Extra Host header to accept (the public host Traefik forwards), in addition
+# to the bind address.
+mcp_public_host = "hermes.hr-home.xyz"
+
 # Local tmpfs socket (never NFS).
 socket_path     = "/run/user/1000/hermes-dms.sock"

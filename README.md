@@ -99,11 +99,13 @@ hermes-dms-ctl stream                 # full-duplex JSON-lines bridge (panel)
 
 ## Security model
 
-- The MCP tools are **unauthenticated** on VLAN20. Defense is network isolation:
-  the server binds the VLAN20 IP, and a Fleet `NetworkPolicy` restricts the
-  Hermes pod to accept the daemon's IP only. `desktop_launch_app` runs arbitrary
-  commands — this is an accepted risk gated by Hermes's single-user Telegram
-  restriction (see the plan's risk table).
+- The MCP endpoint is fronted by Traefik at `https://hermes.hr-home.xyz/mcp`
+  (an IngressRoute → a Service whose endpoints point at the bare-metal daemon)
+  and protected by a **Bearer token** (`mcp_auth_token`). Hermes sends the token
+  via `mcp_servers.desktop.headers.Authorization`. The daemon still binds the
+  VLAN20 IP; the token is the primary defense now that the endpoint is
+  LAN-reachable. `desktop_launch_app` runs arbitrary commands — an accepted risk
+  gated by Hermes's single-user Telegram restriction (see the plan's risk table).
 - `desktop_launch_app` never goes through a shell (`Command::new(cmd).args(...)`,
   no `sh -c`, no expansion).
 - The MCP server's `allowed_hosts` is derived from the bind address (the rmcp

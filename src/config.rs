@@ -25,6 +25,13 @@ pub struct Config {
     pub hermes_api_key: String,
     pub mcp_listen_addr: SocketAddr,
     pub socket_path: PathBuf,
+    /// Bearer token required on the MCP HTTP endpoint. When `None`, the
+    /// endpoint is unauthenticated (relies on network isolation only). Set this
+    /// when the MCP server is reachable via Traefik (`https://.../mcp`).
+    pub mcp_auth_token: Option<String>,
+    /// Public Host header to accept on the MCP endpoint in addition to the bind
+    /// address, e.g. `hermes.hr-home.xyz` when fronted by Traefik.
+    pub mcp_public_host: Option<String>,
 }
 
 /// As parsed from TOML. Every field is optional; defaults are applied during
@@ -36,6 +43,8 @@ pub struct RawConfig {
     pub hermes_api_key: Option<String>,
     pub mcp_listen_addr: Option<String>,
     pub socket_path: Option<String>,
+    pub mcp_auth_token: Option<String>,
+    pub mcp_public_host: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -111,6 +120,13 @@ impl Config {
                     source,
                 })?;
 
+        // The MCP token may also come from the environment (e.g. a systemd
+        // credential), which wins over the file.
+        let mcp_auth_token = std::env::var("MCP_AUTH_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty())
+            .or(raw.mcp_auth_token.filter(|t| !t.is_empty()));
+
         Ok(Config {
             hermes_api_url: raw
                 .hermes_api_url
@@ -121,6 +137,8 @@ impl Config {
                 .socket_path
                 .map(PathBuf::from)
                 .unwrap_or_else(Self::default_socket_path),
+            mcp_auth_token,
+            mcp_public_host: raw.mcp_public_host.filter(|h| !h.is_empty()),
         })
     }
 }

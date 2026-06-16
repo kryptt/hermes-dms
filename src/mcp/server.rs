@@ -4,6 +4,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::Request;
+use axum::http::{StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use tokio::sync::broadcast;
@@ -15,26 +19,33 @@ use crate::ipc::protocol::DaemonMessage;
 
 /// Serve the MCP endpoint at `http://{addr}/mcp` until `shutdown` fires.
 ///
-/// `allowed_hosts` is derived from `addr` (NOT left at the rmcp default of
-/// localhost-only, which would reject Hermes connecting to the VLAN20 IP).
-/// `allowed_origins` stays empty: Hermes is server-to-server and sends no
-/// `Origin`, which always passes; network isolation (binding to the VLAN20 IP)
-/// is the primary defense.
+/// When `auth_token` is set, a Bearer-auth layer guards `/mcp` (needed once the
+/// endpoint is reachable via Traefik). `public_host`, when set, is accepted as
+/// a `Host` header in addition to the bind address — required because Traefik
+/// forwards the original host (e.g. `hermes.hr-home.xyz`), which the rmcp
+/// default (localhost-only) would otherwise reject.
 pub async fn serve(
     addr: SocketAddr,
+    auth_token: Option<String>,
+    public_host: Option<String>,
     dbus: Option<zbus::Connection>,
     toast_tx: broadcast::Sender<DaemonMessage>,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
+    let mut allowed_hosts = vec![
+        addr.to_string(),
+        addr.ip().to_string(),
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+    ];
+    if let Some(host) = &public_host {
+        allowed_hosts.push(host.clone());
+    }
+
     // StreamableHttpServerConfig is #[non_exhaustive]; build via the setters.
     let config = StreamableHttpServerConfig::default()
         .with_sse_keep_alive(Some(Duration::from_secs(30)))
-        .with_allowed_hosts([
-            addr.to_string(),
-            addr.ip().to_string(),
-            "localhost".to_string(),
-            "127.0.0.1".to_string(),
-        ])
+        .with_allowed_hosts(allowed_hosts)
         .with_cancellation_token(shutdown.child_token());
 
     let factory_dbus = dbus;
@@ -45,7 +56,17 @@ pub async fn serve(
         config,
     );
 
-    let router = axum::Router::new().nest_service("/mcp", service);
+    let mut router = axum::Router::new().nest_service("/mcp", service);
+    if let Some(token) = auth_token {
+        let expected = Arc::new(token);
+        router = router.layer(middleware::from_fn(move |req, next| {
+            require_bearer(expected.clone(), req, next)
+        }));
+        info!("MCP Bearer authentication enabled");
+    } else {
+        info!("MCP Bearer authentication disabled (no mcp_auth_token configured)");
+    }
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!(%addr, "MCP server listening at /mcp");
 
@@ -56,6 +77,20 @@ pub async fn serve(
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal)
         .await
+}
+
+/// Bearer-auth middleware for the MCP endpoint: passes the request through only
+/// when `Authorization: Bearer <expected>` matches, else returns 401.
+async fn require_bearer(expected: Arc<String>, req: Request, next: Next) -> Response {
+    let provided = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    match provided {
+        Some(token) if token == expected.as_str() => next.run(req).await,
+        _ => (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
+    }
 }
 
 #[cfg(test)]
@@ -71,10 +106,58 @@ mod tests {
         // Bind to an ephemeral port; we can't pre-read it from serve(), so just
         // assert serve() returns promptly once cancelled.
         let s = shutdown.clone();
-        let handle = tokio::spawn(async move { serve(addr, None, tx, s).await });
+        let handle = tokio::spawn(async move { serve(addr, None, None, None, tx, s).await });
         tokio::time::sleep(Duration::from_millis(100)).await;
         shutdown.cancel();
         let res = tokio::time::timeout(Duration::from_secs(5), handle).await;
         assert!(res.is_ok(), "serve did not shut down within timeout");
+    }
+
+    /// The Bearer middleware rejects missing/incorrect tokens and passes the
+    /// correct one through to the wrapped handler.
+    #[tokio::test]
+    async fn bearer_middleware_gates_requests() {
+        use axum::body::Body;
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        let expected = Arc::new("secret".to_string());
+        let app = axum::Router::new()
+            .route("/mcp", get(|| async { "ok" }))
+            .layer(middleware::from_fn(move |req, next| {
+                require_bearer(expected.clone(), req, next)
+            }));
+
+        let no_header = app
+            .clone()
+            .oneshot(Request::builder().uri("/mcp").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(no_header.status(), StatusCode::UNAUTHORIZED);
+
+        let wrong = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/mcp")
+                    .header("authorization", "Bearer nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+        let ok = app
+            .oneshot(
+                Request::builder()
+                    .uri("/mcp")
+                    .header("authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
     }
 }
