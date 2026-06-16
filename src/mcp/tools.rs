@@ -35,11 +35,9 @@ pub struct LaunchRequest {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ScreenshotRequest {
-    /// "full" (default) for the whole layout, or "window" for the monitor
-    /// containing the focused window.
+    /// "screen" (default) for the focused screen, or "window" for the focused
+    /// window (captured pixel-accurately by niri).
     pub target: Option<String>,
-    /// Optional specific monitor/output name; overrides `target`.
-    pub output: Option<String>,
 }
 
 /// MCP server exposing desktop control tools. `dbus` is optional so the server
@@ -107,25 +105,14 @@ impl DesktopServer {
     }
 
     #[tool(
-        description = "Capture a screenshot of the desktop and return it as a PNG image. target 'full' captures everything; 'window' captures the monitor with the focused window."
+        description = "Capture a screenshot of the desktop and return it as a PNG image. target 'screen' (default) captures the focused screen; 'window' captures the focused window."
     )]
     async fn desktop_screenshot(
         &self,
         Parameters(req): Parameters<ScreenshotRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        // Resolve the monitor: explicit output > focused (window) > whole layout.
-        let output = if let Some(o) = req.output {
-            Some(o)
-        } else if req.target.as_deref() == Some("window") {
-            tokio::task::spawn_blocking(screenshot::focused_output_name)
-                .await
-                .map_err(|e| ErrorData::internal_error(format!("join error: {e}"), None))?
-                .map_err(|e| ErrorData::internal_error(format!("niri query failed: {e}"), None))?
-        } else {
-            None
-        };
-
-        let png = tokio::task::spawn_blocking(move || screenshot::capture(output.as_deref()))
+        let target = screenshot::Target::from_opt(req.target.as_deref());
+        let png = tokio::task::spawn_blocking(move || screenshot::capture(target))
             .await
             .map_err(|e| ErrorData::internal_error(format!("join error: {e}"), None))?
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
