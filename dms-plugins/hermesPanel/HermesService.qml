@@ -18,6 +18,8 @@ Singleton {
     property string statusText: "Connecting…"
     property string sessionId: ""
     property bool popoutVisible: false
+    property var models: []           // ollama-router catalog: [{id, loaded, active}]
+    property string selectedModel: "" // "" = Hermes default
 
     // --- Internal ---
     property string _pendingMessage: ""
@@ -79,6 +81,19 @@ Singleton {
         _send({ type: "session_create", request_id: _uuid(), title: "[Desktop] panel" });
     }
 
+    function requestModels() {
+        _send({ type: "model_list", request_id: _uuid() });
+    }
+
+    // Hermes binds the model at session creation, so a model switch just clears
+    // the session — the next message starts a fresh one on the new model.
+    function setModel(id) {
+        selectedModel = id;
+        _send({ type: "set_model", model: id });
+        sessionId = "";
+        requestModels();
+    }
+
     function notifyIfHidden(title, body) {
         if (popoutVisible)
             return;
@@ -135,6 +150,16 @@ Singleton {
         case "toast":
             notifyIfHidden(msg.title || "Roci", msg.body || "");
             break;
+        case "models":
+            root.models = msg.data || [];
+            if (!root.selectedModel) {
+                var act = root.models.filter(function (m) {
+                    return m.active;
+                });
+                if (act.length)
+                    root.selectedModel = act[0].id;
+            }
+            break;
         case "error":
             if (!msg.request_id || msg.request_id === _currentRequestId) {
                 errorOccurred(msg.message || "error");
@@ -167,6 +192,7 @@ Singleton {
                 root.statusText = "Connecting…";
                 // Ask for the current status now (broadcasts only fire on change).
                 root._send({ type: "status", request_id: root._uuid() });
+                root.requestModels();
             }
         }
         onExited: function (exitCode, exitStatus) {

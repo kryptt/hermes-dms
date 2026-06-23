@@ -462,9 +462,10 @@ mod tests {
     async fn stale_socket_is_replaced() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!("hermes-dms-stale-{}.sock", uuid::Uuid::new_v4()));
-        // Create a stale (non-listening) socket file: bind then immediately
-        // drop the listener, leaving the socket file on disk.
-        drop(UnixListener::bind(&path).unwrap());
+        // A leftover file with no listener behind it. (A real dropped
+        // UnixListener races: tokio doesn't unlink on drop and the fd can stay
+        // briefly connectable, making this flaky under parallel runs.)
+        std::fs::write(&path, b"").unwrap();
         // prepare_socket_path should remove it since nothing is listening.
         prepare_socket_path(&path).await.unwrap();
         assert!(UnixListener::bind(&path).is_ok());

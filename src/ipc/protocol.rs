@@ -42,6 +42,15 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
     },
+    /// Request the ollama-router model catalog (returns `Models`).
+    ModelList { request_id: String },
+    /// Set the model used for subsequent sessions (a fresh session is created
+    /// for the new model, since Hermes binds the model at session creation).
+    SetModel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+        model: String,
+    },
 }
 
 impl ClientMessage {
@@ -53,8 +62,11 @@ impl ClientMessage {
             | ClientMessage::SessionList { request_id }
             | ClientMessage::SessionResume { request_id, .. }
             | ClientMessage::Cancel { request_id }
-            | ClientMessage::Status { request_id } => Some(request_id),
-            ClientMessage::Subscribe { request_id } => request_id.as_deref(),
+            | ClientMessage::Status { request_id }
+            | ClientMessage::ModelList { request_id } => Some(request_id),
+            ClientMessage::Subscribe { request_id } | ClientMessage::SetModel { request_id, .. } => {
+                request_id.as_deref()
+            }
         }
     }
 }
@@ -118,6 +130,20 @@ pub enum DaemonMessage {
         request_id: Option<String>,
         message: String,
     },
+    /// Response to `ModelList`: the ollama-router catalog.
+    Models {
+        request_id: String,
+        data: Vec<ModelInfo>,
+    },
+}
+
+/// A model from ollama-router's catalog. `loaded` = currently in memory
+/// (`/api/ps`); `active` = the model this daemon is currently using.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub loaded: bool,
+    pub active: bool,
 }
 
 /// Minimal session descriptor surfaced to clients. Hermes returns more fields;

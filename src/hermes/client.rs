@@ -75,6 +75,7 @@ impl HermesClient {
         &self,
         id: Option<&str>,
         title: Option<&str>,
+        model: Option<&str>,
     ) -> Result<SessionInfo, HermesError> {
         let mut body = serde_json::Map::new();
         if let Some(id) = id {
@@ -82,6 +83,9 @@ impl HermesClient {
         }
         if let Some(title) = title {
             body.insert("title".into(), json!(title));
+        }
+        if let Some(model) = model {
+            body.insert("model".into(), json!(model));
         }
         let resp = self
             .http
@@ -209,7 +213,7 @@ mod tests {
             .await;
         let client = HermesClient::new(server.uri(), "secret").unwrap();
         let s = client
-            .create_session(Some("desktop_1_abcd"), Some("[Desktop] test"))
+            .create_session(Some("desktop_1_abcd"), Some("[Desktop] test"), None)
             .await
             .unwrap();
         assert_eq!(s.id, "desktop_1_abcd");

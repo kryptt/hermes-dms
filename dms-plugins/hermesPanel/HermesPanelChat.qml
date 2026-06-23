@@ -11,6 +11,7 @@ Item {
 
     // Index of the assistant message currently being streamed (-1 = none).
     property int streamIndex: -1
+    property bool modelMenuOpen: false
 
     // --- Header: title, connection status, new-conversation ---
     Item {
@@ -160,6 +161,41 @@ Item {
                     anchors.leftMargin: 8
                     anchors.rightMargin: 8
                     spacing: 4
+
+                    // Model picker pill (opens modelMenu above the input).
+                    Rectangle {
+                        Layout.preferredHeight: 26
+                        Layout.preferredWidth: modelRow.implicitWidth + 16
+                        radius: 13
+                        color: modelPillArea.containsMouse || chatRoot.modelMenuOpen ? Theme.withAlpha(Theme.surfaceVariant, 0.3) : "transparent"
+                        Row {
+                            id: modelRow
+                            anchors.centerIn: parent
+                            spacing: 4
+                            StyledText {
+                                text: HermesService.selectedModel || "model"
+                                font.pixelSize: 11
+                                color: Theme.surfaceVariantText
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            DankIcon {
+                                name: chatRoot.modelMenuOpen ? "expand_more" : "expand_less"
+                                size: 14
+                                color: Theme.surfaceVariantText
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+                        MouseArea {
+                            id: modelPillArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onClicked: {
+                                if (!chatRoot.modelMenuOpen)
+                                    HermesService.requestModels();
+                                chatRoot.modelMenuOpen = !chatRoot.modelMenuOpen;
+                            }
+                        }
+                    }
 
                     Item {
                         Layout.fillWidth: true
@@ -375,6 +411,76 @@ Item {
                     wrapMode: Text.Wrap
                     color: Theme.error || "#EF4444"
                     font.pixelSize: 13
+                }
+            }
+        }
+    }
+
+    // Model picker dropdown — opens upward from the input pill. Green dot =
+    // loaded in ollama-router; check = active. Picking one starts a fresh
+    // session on that model (Hermes binds the model at session creation).
+    Rectangle {
+        id: modelMenu
+        visible: chatRoot.modelMenuOpen
+        anchors.bottom: inputCard.top
+        anchors.bottomMargin: 6
+        anchors.left: inputCard.left
+        anchors.leftMargin: 8
+        width: 260
+        height: Math.min(300, modelList.contentHeight + 8)
+        radius: 12
+        color: Theme.surfaceContainerHigh
+        border.width: 1
+        border.color: Theme.outlineVariant
+        z: 30
+
+        ListView {
+            id: modelList
+            anchors.fill: parent
+            anchors.margins: 4
+            clip: true
+            model: HermesService.models
+            delegate: Rectangle {
+                width: ListView.view.width
+                height: 32
+                radius: 8
+                color: rowArea.containsMouse ? Theme.withAlpha(Theme.surfaceVariant, 0.3) : "transparent"
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    spacing: 8
+                    Rectangle {
+                        width: 7
+                        height: 7
+                        radius: 3.5
+                        color: modelData.loaded ? "#4CAF50" : Theme.withAlpha(Theme.surfaceVariantText, 0.4)
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+                    StyledText {
+                        text: modelData.id
+                        font.pixelSize: 12
+                        color: Theme.surfaceText
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+                    DankIcon {
+                        visible: modelData.id === HermesService.selectedModel
+                        name: "check"
+                        size: 14
+                        color: Theme.primary
+                    }
+                }
+                MouseArea {
+                    id: rowArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: {
+                        messageModel.clear();
+                        chatRoot.streamIndex = -1;
+                        HermesService.setModel(modelData.id);
+                        chatRoot.modelMenuOpen = false;
+                    }
                 }
             }
         }

@@ -20,6 +20,9 @@ pub const DEFAULT_MCP_LISTEN_ADDR: &str = "10.20.0.3:9721";
 /// `/health`) are appended to this base, becoming `/direct/api/...` etc.
 pub const DEFAULT_HERMES_API_URL: &str = "https://hermes.hr-home.xyz/direct";
 
+/// ollama-router default URL (Traefik LAN route) for the model picker.
+pub const DEFAULT_OLLAMA_ROUTER_URL: &str = "https://ollama.hr-home.xyz";
+
 /// Resolved, validated configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -34,6 +37,10 @@ pub struct Config {
     /// Public Host header to accept on the MCP endpoint in addition to the bind
     /// address, e.g. `hermes.hr-home.xyz` when fronted by Traefik.
     pub mcp_public_host: Option<String>,
+    /// ollama-router base URL for the model picker (catalog + loaded set).
+    pub ollama_router_url: String,
+    /// Bearer token for ollama-router (from the ollama-router-tokens secret).
+    pub ollama_router_token: Option<String>,
 }
 
 /// As parsed from TOML. Every field is optional; defaults are applied during
@@ -47,6 +54,8 @@ pub struct RawConfig {
     pub socket_path: Option<String>,
     pub mcp_auth_token: Option<String>,
     pub mcp_public_host: Option<String>,
+    pub ollama_router_url: Option<String>,
+    pub ollama_router_token: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -141,6 +150,14 @@ impl Config {
                 .unwrap_or_else(Self::default_socket_path),
             mcp_auth_token,
             mcp_public_host: raw.mcp_public_host.filter(|h| !h.is_empty()),
+            ollama_router_url: raw
+                .ollama_router_url
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| DEFAULT_OLLAMA_ROUTER_URL.to_string()),
+            ollama_router_token: std::env::var("OLLAMA_ROUTER_TOKEN")
+                .ok()
+                .filter(|t| !t.is_empty())
+                .or(raw.ollama_router_token.filter(|t| !t.is_empty())),
         })
     }
 }

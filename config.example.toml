@@ -26,3 +26,9 @@ mcp_public_host = "hermes.hr-home.xyz"
 
 # Local tmpfs socket (never NFS).
 socket_path     = "/run/user/1000/hermes-dms.sock"
+
+# Model picker (panel dropdown): ollama-router catalog + loaded set. Token is
+# any entry from the ollama-router-tokens secret (or OLLAMA_ROUTER_TOKEN env).
+# Omit the token to disable the picker.
+ollama_router_url   = "https://ollama.hr-home.xyz"
+ollama_router_token = "replace-with-an-ollama-router-token"

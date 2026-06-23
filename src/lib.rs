@@ -10,5 +10,6 @@ pub mod desktop;
 pub mod hermes;
 pub mod ipc;
 pub mod mcp;
+pub mod ollama;
 
 pub use config::Config;

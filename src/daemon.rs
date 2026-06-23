@@ -1,8 +1,8 @@
 //! Daemon orchestration: wires the IPC server, the MCP server, the Hermes
 //! REST client, and the health/reconnect loop together.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -16,6 +16,7 @@ use crate::hermes::sse::ChatEvent;
 use crate::hermes::{DESKTOP_TITLE_PREFIX, HermesClient, HermesError, new_desktop_session_id};
 use crate::ipc::protocol::{ClientMessage, DaemonMessage, status};
 use crate::ipc::server::{Conn, IpcServer, MessageHandler};
+use crate::ollama::OllamaRouterClient;
 
 /// Capacity of the shared broadcast channel (toasts + status events).
 const BROADCAST_CAP: usize = 256;
@@ -33,6 +34,11 @@ pub struct DaemonHandler {
     /// Session bus, used to deliver launcher (ephemeral) chat responses as
     /// desktop notifications independent of whether the panel is open.
     dbus: Option<zbus::Connection>,
+    /// ollama-router client for the model picker (None if no token configured).
+    ollama: Option<OllamaRouterClient>,
+    /// Model chosen via SetModel; passed when creating new sessions. None = use
+    /// Hermes's configured default.
+    selected_model: Arc<Mutex<Option<String>>>,
 }
 
 impl DaemonHandler {
@@ -40,11 +46,14 @@ impl DaemonHandler {
         hermes: HermesClient,
         hermes_up: Arc<AtomicBool>,
         dbus: Option<zbus::Connection>,
+        ollama: Option<OllamaRouterClient>,
     ) -> Self {
         Self {
             hermes,
             hermes_up,
             dbus,
+            ollama,
+            selected_model: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -62,7 +71,11 @@ impl DaemonHandler {
         let title = title
             .map(str::to_string)
             .unwrap_or_else(|| format!("{DESKTOP_TITLE_PREFIX} {id}"));
-        let session = self.hermes.create_session(Some(&id), Some(&title)).await?;
+        let model = self.selected_model.lock().unwrap().clone();
+        let session = self
+            .hermes
+            .create_session(Some(&id), Some(&title), model.as_deref())
+            .await?;
         Ok(session.id)
     }
 
@@ -248,6 +261,25 @@ impl MessageHandler for DaemonHandler {
                 })
                 .await
             }
+            ClientMessage::ModelList { request_id } => match &self.ollama {
+                Some(ollama) => match ollama.list_models().await {
+                    Ok(mut data) => {
+                        let active = self.selected_model.lock().unwrap().clone();
+                        for m in &mut data {
+                            m.active = active.as_deref() == Some(m.id.as_str());
+                        }
+                        conn.send(DaemonMessage::Models { request_id, data }).await
+                    }
+                    Err(e) => self.send_error(&conn, &request_id, e.to_string()).await,
+                },
+                None => {
+                    self.send_error(&conn, &request_id, "model picker not configured".into())
+                        .await
+                }
+            },
+            ClientMessage::SetModel { model, .. } => {
+                *self.selected_model.lock().unwrap() = Some(model);
+            }
             // Subscribe and Cancel are handled by the IPC server itself.
             ClientMessage::Subscribe { .. } | ClientMessage::Cancel { .. } => {}
         }
@@ -329,8 +361,15 @@ pub async fn run(config: Config, shutdown: CancellationToken) -> std::io::Result
         }
     });
 
+    // Model picker (optional): needs a token to reach ollama-router via Traefik.
+    let ollama = config.ollama_router_token.as_ref().and_then(|tok| {
+        OllamaRouterClient::new(config.ollama_router_url.clone(), Some(tok.clone()))
+            .map_err(|e| warn!(error = %e, "ollama-router client init failed; model picker disabled"))
+            .ok()
+    });
+
     // Foreground: IPC server.
-    let handler = Arc::new(DaemonHandler::new(hermes, hermes_up, dbus));
+    let handler = Arc::new(DaemonHandler::new(hermes, hermes_up, dbus, ollama));
     let ipc = IpcServer::new(handler, broadcast_tx);
     ipc.run(config.socket_path.clone(), shutdown).await
 }
@@ -380,6 +419,7 @@ mod tests {
         let handler = Arc::new(DaemonHandler::new(
             hermes,
             Arc::new(AtomicBool::new(true)),
+            None,
             None,
         ));
         let shutdown = CancellationToken::new();
