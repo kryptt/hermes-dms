@@ -84,12 +84,7 @@ pub enum DaemonMessage {
         status: String,
     },
     /// A chat run finished. `content` is the final assistant message.
-    ChatComplete {
-        request_id: String,
-        content: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        usage: Option<serde_json::Value>,
-    },
+    ChatComplete { request_id: String, content: String },
     /// Response to `SessionCreate`.
     SessionCreated {
         request_id: String,
@@ -162,7 +157,6 @@ pub mod status {
     pub const CONNECTED: &str = "connected";
     pub const DISCONNECTED: &str = "disconnected";
     pub const READY: &str = "ready";
-    pub const STARTING: &str = "starting";
 }
 
 #[cfg(test)]
@@ -245,7 +239,6 @@ mod tests {
             DaemonMessage::ChatComplete {
                 request_id: "abc".into(),
                 content: "Done.".into(),
-                usage: Some(serde_json::json!({"tokens": 10})),
             },
             DaemonMessage::Toast {
                 title: "Roci via Telegram".into(),

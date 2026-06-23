@@ -34,9 +34,6 @@ pub struct Config {
     /// endpoint is unauthenticated (relies on network isolation only). Set this
     /// when the MCP server is reachable via Traefik (`https://.../mcp`).
     pub mcp_auth_token: Option<String>,
-    /// Public Host header to accept on the MCP endpoint in addition to the bind
-    /// address, e.g. `hermes.hr-home.xyz` when fronted by Traefik.
-    pub mcp_public_host: Option<String>,
     /// ollama-router base URL for the model picker (catalog + loaded set).
     pub ollama_router_url: String,
     /// Bearer token for ollama-router (from the ollama-router-tokens secret).
@@ -53,7 +50,6 @@ pub struct RawConfig {
     pub mcp_listen_addr: Option<String>,
     pub socket_path: Option<String>,
     pub mcp_auth_token: Option<String>,
-    pub mcp_public_host: Option<String>,
     pub ollama_router_url: Option<String>,
     pub ollama_router_token: Option<String>,
 }
@@ -149,7 +145,6 @@ impl Config {
                 .map(PathBuf::from)
                 .unwrap_or_else(Self::default_socket_path),
             mcp_auth_token,
-            mcp_public_host: raw.mcp_public_host.filter(|h| !h.is_empty()),
             ollama_router_url: raw
                 .ollama_router_url
                 .filter(|u| !u.is_empty())

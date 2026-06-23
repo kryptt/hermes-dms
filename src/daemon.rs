@@ -158,7 +158,6 @@ impl DaemonHandler {
 
         tokio::pin!(stream);
         let mut final_content = String::new();
-        let mut usage = None;
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => {
@@ -182,7 +181,6 @@ impl DaemonHandler {
                     }
                     // assistant.completed is authoritative for the final text.
                     Some(ChatEvent::AssistantCompleted { content }) => final_content = content,
-                    Some(ChatEvent::RunCompleted { usage: u }) => usage = u,
                     Some(ChatEvent::Error(m)) => {
                         self.send_error(conn, request_id, m).await;
                         return None;
@@ -196,7 +194,6 @@ impl DaemonHandler {
         conn.send(DaemonMessage::ChatComplete {
             request_id: request_id.to_string(),
             content: final_content.clone(),
-            usage,
         })
         .await;
         Some(final_content)
@@ -349,13 +346,12 @@ pub async fn run(config: Config, shutdown: CancellationToken) -> std::io::Result
     // Background: MCP HTTP server (shares the broadcast channel for toasts).
     let mcp_addr = config.mcp_listen_addr;
     let mcp_auth = config.mcp_auth_token.clone();
-    let mcp_host = config.mcp_public_host.clone();
     let mcp_tx = broadcast_tx.clone();
     let mcp_shutdown = shutdown.child_token();
     let mcp_dbus = dbus.clone();
     tokio::spawn(async move {
         if let Err(e) =
-            crate::mcp::serve(mcp_addr, mcp_auth, mcp_host, mcp_dbus, mcp_tx, mcp_shutdown).await
+            crate::mcp::serve(mcp_addr, mcp_auth, mcp_dbus, mcp_tx, mcp_shutdown).await
         {
             error!(error = %e, "MCP server exited with error");
         }

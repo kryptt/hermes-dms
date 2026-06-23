@@ -24,10 +24,6 @@ pub enum ChatEvent {
     AssistantCompleted {
         content: String,
     },
-    /// Run finished; carries the opaque usage object if present.
-    RunCompleted {
-        usage: Option<Value>,
-    },
     /// Server-reported error mid-run.
     Error(String),
     /// Terminal sentinel.
@@ -64,9 +60,6 @@ pub fn parse_event(name: &str, data: &str) -> ChatEvent {
         }
         "assistant.completed" => ChatEvent::AssistantCompleted {
             content: str_field(&json, "content"),
-        },
-        "run.completed" => ChatEvent::RunCompleted {
-            usage: json.get("usage").cloned(),
         },
         "error" => {
             let msg = json
@@ -118,17 +111,6 @@ mod tests {
                 content: "Done. Firefox is open.".into()
             }
         );
-    }
-
-    #[test]
-    fn run_completed_captures_usage() {
-        let ev = parse_event("run.completed", r#"{"usage":{"input_tokens":5}}"#);
-        match ev {
-            ChatEvent::RunCompleted { usage: Some(u) } => {
-                assert_eq!(u["input_tokens"], 5);
-            }
-            other => panic!("expected RunCompleted with usage, got {other:?}"),
-        }
     }
 
     #[test]

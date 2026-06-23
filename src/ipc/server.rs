@@ -275,7 +275,6 @@ mod tests {
                     conn.send(DaemonMessage::ChatComplete {
                         request_id,
                         content: message,
-                        usage: None,
                     })
                     .await;
                 }

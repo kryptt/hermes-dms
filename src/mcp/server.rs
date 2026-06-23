@@ -20,27 +20,22 @@ use crate::ipc::protocol::DaemonMessage;
 /// Serve the MCP endpoint at `http://{addr}/mcp` until `shutdown` fires.
 ///
 /// When `auth_token` is set, a Bearer-auth layer guards `/mcp` (needed once the
-/// endpoint is reachable via Traefik). `public_host`, when set, is accepted as
-/// a `Host` header in addition to the bind address — required because Traefik
-/// forwards the original host (e.g. `hermes.hr-home.xyz`), which the rmcp
-/// default (localhost-only) would otherwise reject.
+/// endpoint is reachable via Traefik). Hermes dials the bind address directly
+/// (config-based MCP registration), so the bind address is the only Host
+/// accepted.
 pub async fn serve(
     addr: SocketAddr,
     auth_token: Option<String>,
-    public_host: Option<String>,
     dbus: Option<zbus::Connection>,
     toast_tx: broadcast::Sender<DaemonMessage>,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
-    let mut allowed_hosts = vec![
+    let allowed_hosts = vec![
         addr.to_string(),
         addr.ip().to_string(),
         "localhost".to_string(),
         "127.0.0.1".to_string(),
     ];
-    if let Some(host) = &public_host {
-        allowed_hosts.push(host.clone());
-    }
 
     // StreamableHttpServerConfig is #[non_exhaustive]; build via the setters.
     let config = StreamableHttpServerConfig::default()
@@ -106,7 +101,7 @@ mod tests {
         // Bind to an ephemeral port; we can't pre-read it from serve(), so just
         // assert serve() returns promptly once cancelled.
         let s = shutdown.clone();
-        let handle = tokio::spawn(async move { serve(addr, None, None, None, tx, s).await });
+        let handle = tokio::spawn(async move { serve(addr, None, None, tx, s).await });
         tokio::time::sleep(Duration::from_millis(100)).await;
         shutdown.cancel();
         let res = tokio::time::timeout(Duration::from_secs(5), handle).await;
