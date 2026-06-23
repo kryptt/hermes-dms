@@ -99,6 +99,15 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.max(44, inputField.contentHeight + 24)
 
+                // Focus the field when clicking anywhere in the row — the
+                // TextEdit's hit area excludes the padding. Below the TextEdit
+                // so direct clicks still place the caret / select text.
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.IBeamCursor
+                    onClicked: inputField.forceActiveFocus()
+                }
+
                 TextEdit {
                     id: inputField
                     anchors.fill: parent
@@ -379,7 +388,15 @@ Item {
         HermesService.sendMessage(text);
     }
 
-    Component.onCompleted: inputField.forceActiveFocus()
+    // The popout force-focuses its own container via Qt.callLater on open,
+    // which would steal focus from the input. Re-grab it a tick later.
+    Component.onCompleted: focusTimer.start()
+    Timer {
+        id: focusTimer
+        interval: 80
+        repeat: false
+        onTriggered: inputField.forceActiveFocus()
+    }
 
     Connections {
         target: HermesService

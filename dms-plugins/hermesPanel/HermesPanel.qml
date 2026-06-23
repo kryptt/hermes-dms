@@ -39,16 +39,10 @@ PluginComponent {
             // notifications while the panel is on screen.
             onVisibleChanged: HermesService.popoutVisible = visible
 
-            // Translucent backdrop so the chat stays legible over whatever's
-            // behind it (e.g. a terminal). DMS popout convention
-            // (surfaceContainer at the user's popupTransparency setting).
-            Rectangle {
-                anchors.fill: parent
-                radius: 20
-                color: Theme.panelBackground()
-                border.width: 1
-                border.color: Theme.outlineVariant
-            }
+            // No background here: DankPopout already paints the rounded,
+            // translucent surface (surfaceContainer at popupTransparency) with
+            // a shadow. A second backdrop with a different radius caused the
+            // "square bleed" at the corners.
 
             HermesPanelChat {
                 anchors.fill: parent
