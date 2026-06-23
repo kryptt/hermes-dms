@@ -217,7 +217,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(s.id, "desktop_1_abcd");
-        assert_eq!(s.source.as_deref(), Some("api_server"));
     }
 
     #[tokio::test]
