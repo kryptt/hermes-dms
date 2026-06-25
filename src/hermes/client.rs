@@ -340,7 +340,11 @@ mod tests {
             .collect();
         assert_eq!(
             pairs,
-            vec![("user", "Hi"), ("assistant", "Hey. What's up?"), ("user", "bye")]
+            vec![
+                ("user", "Hi"),
+                ("assistant", "Hey. What's up?"),
+                ("user", "bye")
+            ]
         );
     }
 

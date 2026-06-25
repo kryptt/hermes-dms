@@ -392,7 +392,10 @@ impl MessageHandler for DaemonHandler {
                 }
             },
             ClientMessage::SetModel { model, .. } => {
-                *self.selected_model.lock().unwrap_or_else(PoisonError::into_inner) = Some(model);
+                *self
+                    .selected_model
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(model);
             }
             // Subscribe and Cancel are handled by the IPC server itself.
             ClientMessage::Subscribe { .. } | ClientMessage::Cancel { .. } => {}
@@ -473,8 +476,15 @@ pub async fn run(config: Config, shutdown: CancellationToken) -> std::io::Result
     let mcp_dbus = dbus.clone();
     let mcp_bridge = bridge.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            crate::mcp::serve(mcp_addr, mcp_auth, mcp_dbus, mcp_tx, mcp_bridge, mcp_shutdown).await
+        if let Err(e) = crate::mcp::serve(
+            mcp_addr,
+            mcp_auth,
+            mcp_dbus,
+            mcp_tx,
+            mcp_bridge,
+            mcp_shutdown,
+        )
+        .await
         {
             error!(error = %e, "MCP server exited with error");
         }
@@ -483,7 +493,9 @@ pub async fn run(config: Config, shutdown: CancellationToken) -> std::io::Result
     // Model picker (optional): needs a token to reach ollama-router via Traefik.
     let ollama = config.ollama_router_token.as_ref().and_then(|tok| {
         OllamaRouterClient::new(config.ollama_router_url.clone(), Some(tok.clone()))
-            .map_err(|e| warn!(error = %e, "ollama-router client init failed; model picker disabled"))
+            .map_err(
+                |e| warn!(error = %e, "ollama-router client init failed; model picker disabled"),
+            )
             .ok()
     });
 
@@ -599,8 +611,7 @@ mod tests {
         }
         impl Respond for UniqueTitle {
             fn respond(&self, req: &Request) -> ResponseTemplate {
-                let body: serde_json::Value =
-                    serde_json::from_slice(&req.body).unwrap_or_default();
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
                 let title = body["title"].as_str().unwrap_or_default().to_string();
                 let id = body["id"].as_str().unwrap_or("x").to_string();
                 if !self.seen.lock().unwrap().insert(title.clone()) {

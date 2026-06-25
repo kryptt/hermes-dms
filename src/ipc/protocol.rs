@@ -70,9 +70,8 @@ impl ClientMessage {
             | ClientMessage::Cancel { request_id }
             | ClientMessage::Status { request_id }
             | ClientMessage::ModelList { request_id } => Some(request_id),
-            ClientMessage::Subscribe { request_id } | ClientMessage::SetModel { request_id, .. } => {
-                request_id.as_deref()
-            }
+            ClientMessage::Subscribe { request_id }
+            | ClientMessage::SetModel { request_id, .. } => request_id.as_deref(),
         }
     }
 }

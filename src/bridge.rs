@@ -13,8 +13,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -137,7 +137,10 @@ impl BridgeHub {
 
 /// axum handler for `GET /gateway` (WebSocket upgrade). Bearer auth is applied
 /// by the shared middleware on the router.
-pub async fn gateway_ws_handler(ws: WebSocketUpgrade, State(hub): State<Arc<BridgeHub>>) -> Response {
+pub async fn gateway_ws_handler(
+    ws: WebSocketUpgrade,
+    State(hub): State<Arc<BridgeHub>>,
+) -> Response {
     ws.on_upgrade(move |socket| handle_socket(socket, hub))
 }
 
