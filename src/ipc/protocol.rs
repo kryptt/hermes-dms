@@ -11,14 +11,17 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     /// Send a chat message. `session_id` is optional — when omitted the daemon
-    /// creates a fresh ephemeral Hermes session (launcher semantics).
+    /// mints an ephemeral chat_id and delivers the reply as a desktop
+    /// notification (launcher semantics). Either way the message is routed
+    /// through the desktop-platform bridge.
     Chat {
         request_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
         message: String,
     },
-    /// Create a new desktop session (returns `SessionCreated`).
+    /// Start a new desktop conversation (returns `SessionCreated` with a freshly
+    /// minted chat_id). The gateway creates the backing session on first message.
     SessionCreate {
         request_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,8 +52,9 @@ pub enum ClientMessage {
     },
     /// Request the ollama-router model catalog (returns `Models`).
     ModelList { request_id: String },
-    /// Set the model used for subsequent sessions (a fresh session is created
-    /// for the new model, since Hermes binds the model at session creation).
+    /// Set the model the panel reports for new conversations. Live model
+    /// switching for the current conversation goes through the gateway `/model`
+    /// slash command (sent as a normal chat over the bridge), not this message.
     SetModel {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
@@ -81,7 +85,8 @@ impl ClientMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonMessage {
     /// Incremental assistant output for an in-flight chat (append to the
-    /// streaming bubble). Used by the api_server SSE path.
+    /// streaming bubble). Currently unused by the daemon (the bridge streams via
+    /// `Draft`); retained for the `ctl` renderer and any append-style source.
     Delta { request_id: String, content: String },
     /// Growing *full* assistant text for an in-flight chat (replace the
     /// streaming bubble). Used by the desktop-platform bridge (`send_draft`).
@@ -117,7 +122,8 @@ pub enum DaemonMessage {
         data: Vec<ChatMessage>,
     },
     /// The daemon transparently rotated a reset session; the panel should
-    /// adopt `new_id` and show a subtle "session refreshed" indicator.
+    /// adopt `new_id` and show a subtle "session refreshed" indicator. Currently
+    /// unemitted (the gateway owns session lifecycle); kept for the panel handler.
     SessionReset {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,

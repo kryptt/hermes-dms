@@ -1,9 +1,7 @@
-//! Hermes platform API client: session management + streaming chat.
+//! Hermes platform API client: session list/history + health.
 
 pub mod client;
 pub mod session;
-pub mod sse;
 
 pub use client::{HermesClient, HermesError};
-pub use session::{DESKTOP_TITLE_PREFIX, is_desktop_session, new_desktop_session_id};
-pub use sse::ChatEvent;
+pub use session::new_desktop_session_id;

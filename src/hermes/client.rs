@@ -2,13 +2,9 @@
 
 use std::time::Duration;
 
-use eventsource_stream::Eventsource;
-use futures_util::{Stream, StreamExt};
 use reqwest::StatusCode;
 use serde::Deserialize;
-use serde_json::json;
 
-use super::sse::{ChatEvent, parse_event};
 use crate::ipc::protocol::{ChatMessage, SessionInfo};
 
 #[derive(Debug, thiserror::Error)]
@@ -69,42 +65,6 @@ impl HermesClient {
         }
     }
 
-    /// `POST /api/sessions` — create a session, optionally with a client id
-    /// (e.g. a `desktop_` prefixed id) and title.
-    pub async fn create_session(
-        &self,
-        id: Option<&str>,
-        title: Option<&str>,
-        model: Option<&str>,
-    ) -> Result<SessionInfo, HermesError> {
-        let mut body = serde_json::Map::new();
-        if let Some(id) = id {
-            body.insert("id".into(), json!(id));
-        }
-        if let Some(title) = title {
-            body.insert("title".into(), json!(title));
-        }
-        if let Some(model) = model {
-            body.insert("model".into(), json!(model));
-        }
-        let resp = self
-            .http
-            .post(self.url("/api/sessions"))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await?;
-        let resp = check_status(resp).await?;
-
-        #[derive(Deserialize)]
-        struct Wrap {
-            session: SessionInfo,
-        }
-        let wrap: Wrap = resp.json().await?;
-        Ok(wrap.session)
-    }
-
     /// `GET /api/sessions` — list sessions (newest first).
     pub async fn list_sessions(&self) -> Result<Vec<SessionInfo>, HermesError> {
         let resp = self
@@ -162,34 +122,6 @@ impl HermesClient {
             })
             .collect())
     }
-
-    /// `POST /api/sessions/{id}/chat/stream` — send a message and stream the
-    /// reply. Returns [`HermesError::SessionNotFound`] (404) if the session was
-    /// reset, so the caller can mint a fresh one. The returned stream is
-    /// consumed until [`ChatEvent::Done`].
-    pub async fn chat_stream(
-        &self,
-        session_id: &str,
-        message: &str,
-    ) -> Result<impl Stream<Item = ChatEvent> + use<>, HermesError> {
-        // `+ use<>`: the returned stream owns the response body and borrows
-        // neither the arguments nor `self`, so it captures no lifetimes
-        // (edition-2024 RPIT would otherwise capture them all).
-        let resp = self
-            .http
-            .post(self.url(&format!("/api/sessions/{session_id}/chat/stream")))
-            .bearer_auth(&self.api_key)
-            .json(&json!({ "message": message }))
-            .send()
-            .await?;
-        let resp = check_status(resp).await?;
-
-        let stream = resp.bytes_stream().eventsource().map(|res| match res {
-            Ok(ev) => parse_event(&ev.event, &ev.data),
-            Err(e) => ChatEvent::Error(format!("SSE stream error: {e}")),
-        });
-        Ok(stream)
-    }
 }
 
 /// Translate a non-success HTTP status into a typed error.
@@ -214,8 +146,8 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, Herm
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::StreamExt;
-    use wiremock::matchers::{header, method, path};
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -240,26 +172,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_session_sends_bearer_and_parses_session() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/sessions"))
-            .and(header("authorization", "Bearer secret"))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
-                "object": "hermes.session",
-                "session": {"id": "desktop_1_abcd", "title": "[Desktop] test", "source": "api_server", "model": "x"}
-            })))
-            .mount(&server)
-            .await;
-        let client = HermesClient::new(server.uri(), "secret").unwrap();
-        let s = client
-            .create_session(Some("desktop_1_abcd"), Some("[Desktop] test"), None)
-            .await
-            .unwrap();
-        assert_eq!(s.id, "desktop_1_abcd");
-    }
-
-    #[tokio::test]
     async fn auth_failure_maps_to_auth_error() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -275,22 +187,6 @@ mod tests {
             client.list_sessions().await,
             Err(HermesError::Auth)
         ));
-    }
-
-    #[tokio::test]
-    async fn chat_on_missing_session_maps_to_not_found() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/sessions/desktop_gone/chat/stream"))
-            .respond_with(
-                ResponseTemplate::new(404)
-                    .set_body_json(json!({"error": {"message": "no session"}})),
-            )
-            .mount(&server)
-            .await;
-        let client = HermesClient::new(server.uri(), "k").unwrap();
-        let res = client.chat_stream("desktop_gone", "hi").await;
-        assert!(matches!(res.err(), Some(HermesError::SessionNotFound)));
     }
 
     #[tokio::test]
@@ -345,53 +241,6 @@ mod tests {
                 ("assistant", "Hey. What's up?"),
                 ("user", "bye")
             ]
-        );
-    }
-
-    #[tokio::test]
-    async fn chat_stream_parses_sse_event_sequence() {
-        let server = MockServer::start().await;
-        let sse_body = concat!(
-            "event: run.started\ndata: {\"user_message\":{}}\n\n",
-            "event: assistant.delta\ndata: {\"delta\":\"Hel\"}\n\n",
-            "event: assistant.delta\ndata: {\"delta\":\"lo\"}\n\n",
-            ": keepalive\n\n",
-            "event: tool.started\ndata: {\"tool_name\":\"desktop_launch_app\"}\n\n",
-            "event: assistant.completed\ndata: {\"content\":\"Hello\"}\n\n",
-            "event: run.completed\ndata: {\"usage\":{\"input_tokens\":3}}\n\n",
-            "event: done\ndata: {}\n\n",
-        );
-        Mock::given(method("POST"))
-            .and(path("/api/sessions/desktop_1/chat/stream"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse_body),
-            )
-            .mount(&server)
-            .await;
-        let client = HermesClient::new(server.uri(), "k").unwrap();
-        let stream = client.chat_stream("desktop_1", "hi").await.unwrap();
-        let events: Vec<ChatEvent> = stream.collect().await;
-
-        // Deltas concatenate to the streamed text.
-        let text: String = events
-            .iter()
-            .filter_map(|e| match e {
-                ChatEvent::Delta(d) => Some(d.clone()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(text, "Hello");
-        // The keepalive comment produced no event.
-        assert!(events.contains(&ChatEvent::AssistantCompleted {
-            content: "Hello".into()
-        }));
-        assert!(events.contains(&ChatEvent::Done));
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, ChatEvent::ToolProgress { .. }))
         );
     }
 }

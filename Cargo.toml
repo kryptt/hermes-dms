@@ -26,10 +26,9 @@ schemars = "1"
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
-# SSE parsing for the Hermes chat stream
-eventsource-stream = "0.2"
+# Async stream combinators for the gateway bridge (WS framing + ReceiverStream).
 futures-util = "0.3"
 # Streaming primitives (ReceiverStream) — same crate ollama-router uses.
 tokio-stream = { version = "0.1", features = ["sync"] }

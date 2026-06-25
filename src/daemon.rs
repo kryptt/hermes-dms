@@ -14,11 +14,8 @@ use tracing::{error, info, warn};
 use crate::Config;
 use crate::bridge::{BridgeHub, FromAdapter};
 use crate::desktop::notify;
-use crate::hermes::sse::ChatEvent;
-use crate::hermes::{
-    DESKTOP_TITLE_PREFIX, HermesClient, HermesError, is_desktop_session, new_desktop_session_id,
-};
-use crate::ipc::protocol::{ClientMessage, DaemonMessage, SessionInfo, status};
+use crate::hermes::{HermesClient, new_desktop_session_id};
+use crate::ipc::protocol::{ClientMessage, DaemonMessage, status};
 use crate::ipc::server::{Conn, IpcServer, MessageHandler};
 use crate::ollama::OllamaRouterClient;
 
@@ -30,7 +27,8 @@ const HEALTH_INTERVAL: Duration = Duration::from_secs(10);
 /// Max length of a launcher response delivered as a desktop notification.
 const NOTIFY_MAX_LEN: usize = 280;
 
-/// Bridges local IPC requests to the Hermes REST API.
+/// Routes local IPC requests: chat through the desktop-platform bridge, and
+/// session list/history + health through the Hermes REST client.
 pub struct DaemonHandler {
     hermes: HermesClient,
     /// Last observed Hermes reachability (kept current by the health loop).
@@ -43,9 +41,8 @@ pub struct DaemonHandler {
     /// Model chosen via SetModel; passed when creating new sessions. None = use
     /// Hermes's configured default.
     selected_model: Arc<Mutex<Option<String>>>,
-    /// Desktop-platform bridge. When an adapter is connected, panel chats route
-    /// through it (full gateway pipeline: slash commands, model override, …)
-    /// instead of the api_server REST path.
+    /// Desktop-platform bridge. All chats route through it (full gateway
+    /// pipeline: slash commands, per-session model override, …).
     bridge: Arc<BridgeHub>,
 }
 
@@ -75,40 +72,16 @@ impl DaemonHandler {
         }
     }
 
-    /// Create a fresh desktop session and return its id.
+    /// Handle a chat: route it through the desktop-platform bridge (the gateway
+    /// pipeline — slash commands, per-session model override, …). A panel chat
+    /// carries its conversation `chat_id` (`session_id`); a launcher chat has
+    /// none, so we mint an ephemeral `chat_id` and deliver the final reply as a
+    /// desktop notification (the launcher closes immediately, so the panel
+    /// stream alone would never be seen).
     ///
-    /// The id-based title is always unique. A caller-provided title (e.g. the
-    /// panel's fixed `[Desktop] panel`) can collide with an existing session,
-    /// which Hermes rejects with a 400 `invalid_title`; we recover by retrying
-    /// once with the guaranteed-unique id title.
-    async fn new_session(&self, title: Option<&str>) -> Result<SessionInfo, HermesError> {
-        let id = new_desktop_session_id();
-        let unique = format!("{DESKTOP_TITLE_PREFIX} {id}");
-        let chosen = title.unwrap_or(unique.as_str());
-        let model = self
-            .selected_model
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        match self
-            .hermes
-            .create_session(Some(&id), Some(chosen), model.as_deref())
-            .await
-        {
-            Ok(session) => Ok(session),
-            Err(HermesError::Status { status: 400, body })
-                if body.contains("invalid_title") && chosen != unique =>
-            {
-                self.hermes
-                    .create_session(Some(&id), Some(&unique), model.as_deref())
-                    .await
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Handle a chat: resolve a session (create an ephemeral one if none given),
-    /// stream the reply, and recover once from a reset (404) session.
+    /// The gateway owns the session keyed by `chat_id`; there is no REST
+    /// pre-creation. When the conversation lands a session, it shows up in the
+    /// switcher via `source == "desktop"`.
     async fn handle_chat(
         &self,
         request_id: String,
@@ -117,48 +90,19 @@ impl DaemonHandler {
         conn: &Conn,
         cancel: &CancellationToken,
     ) {
-        // Panel chat (has a conversation/chat id) routes through the desktop
-        // platform bridge when an adapter is connected — that's the path that
-        // gets slash commands (/model) and per-session model overrides. Falls
-        // back to the api_server REST path below when no adapter is connected.
-        if let Some(chat_id) = session_id.clone()
-            && self.bridge.is_connected()
-        {
-            return self
-                .chat_via_bridge(request_id, chat_id, message, conn, cancel)
-                .await;
-        }
-
-        // No session id => launcher (ephemeral). Such responses are also
-        // delivered as a desktop notification so they're visible even when the
-        // panel isn't open.
-        let ephemeral = session_id.is_none();
-        let sid = match session_id {
-            Some(s) => s,
-            None => match self.new_session(None).await {
-                Ok(s) => s.id,
-                Err(e) => return self.send_error(conn, &request_id, e.to_string()).await,
-            },
-        };
-        let final_content = self
-            .stream_chat(&request_id, sid, &message, conn, cancel, true)
+        let notify_on_complete = session_id.is_none();
+        let chat_id = session_id.unwrap_or_else(new_desktop_session_id);
+        self.chat_via_bridge(request_id, chat_id, message, conn, cancel, notify_on_complete)
             .await;
-
-        if ephemeral
-            && let (Some(content), Some(dbus)) = (final_content, &self.dbus)
-            && !content.is_empty()
-        {
-            let body: String = content.chars().take(NOTIFY_MAX_LEN).collect();
-            if let Err(e) = notify::send(dbus, "Roci", &body, notify::Urgency::Normal, None).await {
-                warn!(error = %e, "failed to deliver launcher response notification");
-            }
-        }
     }
 
-    /// Route a panel chat through the desktop-platform bridge: push the message
-    /// to the adapter (keyed by `chat_id`) and relay its `draft`/`send` frames
-    /// back as `Draft`/`ChatComplete`. The adapter runs the message through the
-    /// full gateway pipeline, so `/model` etc. work here.
+    /// Route a chat through the desktop-platform bridge: push the message to the
+    /// adapter (keyed by `chat_id`) and relay its `draft`/`send` frames back as
+    /// `Draft`/`ChatComplete`. The adapter runs the message through the full
+    /// gateway pipeline, so `/model` etc. work here.
+    ///
+    /// When `notify_on_complete` is set (launcher chats), the final reply is
+    /// also delivered as a desktop notification.
     async fn chat_via_bridge(
         &self,
         request_id: String,
@@ -166,6 +110,7 @@ impl DaemonHandler {
         message: String,
         conn: &Conn,
         cancel: &CancellationToken,
+        notify_on_complete: bool,
     ) {
         let mut frames = UnboundedReceiverStream::new(self.bridge.open_chat(&chat_id));
         if !self.bridge.send_inbound(&chat_id, &message, &request_id) {
@@ -188,6 +133,9 @@ impl DaemonHandler {
                         }).await;
                     }
                     Some(FromAdapter::Send { text, .. }) => {
+                        if notify_on_complete {
+                            self.notify_launcher(&text).await;
+                        }
                         conn.send(DaemonMessage::ChatComplete {
                             request_id: request_id.clone(),
                             content: text,
@@ -206,89 +154,16 @@ impl DaemonHandler {
         self.bridge.close_chat(&chat_id);
     }
 
-    /// Stream a chat turn, emitting Delta/ToolProgress/ChatComplete over `conn`.
-    /// Returns the final assistant text on success, or `None` if it errored or
-    /// was cancelled (in which case an Error was already sent).
-    async fn stream_chat(
-        &self,
-        request_id: &str,
-        session_id: String,
-        message: &str,
-        conn: &Conn,
-        cancel: &CancellationToken,
-        allow_reset_recovery: bool,
-    ) -> Option<String> {
-        let stream = match self.hermes.chat_stream(&session_id, message).await {
-            Ok(s) => s,
-            Err(HermesError::SessionNotFound) if allow_reset_recovery => {
-                // The session was reset; mint a new one and retry once.
-                match self.new_session(None).await {
-                    Ok(s) => {
-                        let new_id = s.id;
-                        conn.send(DaemonMessage::SessionReset {
-                            request_id: Some(request_id.to_string()),
-                            old_id: session_id,
-                            new_id: new_id.clone(),
-                        })
-                        .await;
-                        return Box::pin(
-                            self.stream_chat(request_id, new_id, message, conn, cancel, false),
-                        )
-                        .await;
-                    }
-                    Err(e) => {
-                        self.send_error(conn, request_id, e.to_string()).await;
-                        return None;
-                    }
-                }
-            }
-            Err(e) => {
-                self.send_error(conn, request_id, e.to_string()).await;
-                return None;
-            }
+    /// Deliver a launcher reply as a desktop notification, so it's visible
+    /// without the panel open. No-op without a session bus or on empty text.
+    async fn notify_launcher(&self, content: &str) {
+        let (Some(dbus), false) = (&self.dbus, content.is_empty()) else {
+            return;
         };
-
-        tokio::pin!(stream);
-        let mut final_content = String::new();
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    self.send_error(conn, request_id, "cancelled".into()).await;
-                    return None;
-                }
-                item = stream.next() => match item {
-                    Some(ChatEvent::Delta(c)) => {
-                        final_content.push_str(&c);
-                        conn.send(DaemonMessage::Delta {
-                            request_id: request_id.to_string(),
-                            content: c,
-                        }).await;
-                    }
-                    Some(ChatEvent::ToolProgress { tool_name, status }) => {
-                        conn.send(DaemonMessage::ToolProgress {
-                            request_id: request_id.to_string(),
-                            tool_name,
-                            status,
-                        }).await;
-                    }
-                    // assistant.completed is authoritative for the final text.
-                    Some(ChatEvent::AssistantCompleted { content }) => final_content = content,
-                    Some(ChatEvent::Error(m)) => {
-                        self.send_error(conn, request_id, m).await;
-                        return None;
-                    }
-                    Some(ChatEvent::Done) | None => break,
-                    Some(_) => {}
-                }
-            }
+        let body: String = content.chars().take(NOTIFY_MAX_LEN).collect();
+        if let Err(e) = notify::send(dbus, "Roci", &body, notify::Urgency::Normal, None).await {
+            warn!(error = %e, "failed to deliver launcher response notification");
         }
-
-        conn.send(DaemonMessage::ChatComplete {
-            request_id: request_id.to_string(),
-            content: final_content.clone(),
-        })
-        .await;
-        Some(final_content)
     }
 
     async fn send_error(&self, conn: &Conn, request_id: &str, message: String) {
@@ -311,27 +186,37 @@ impl MessageHandler for DaemonHandler {
                 self.handle_chat(request_id, session_id, message, &conn, &cancel)
                     .await;
             }
+            // No REST pre-creation: the gateway owns desktop sessions and mints
+            // one (keyed by this chat_id) on the first bridge message. We just
+            // hand the panel a fresh chat_id to use as its conversation handle,
+            // tagged with the daemon's currently-selected model for display.
             ClientMessage::SessionCreate { request_id, title } => {
-                match self.new_session(title.as_deref()).await {
-                    Ok(s) => {
-                        conn.send(DaemonMessage::SessionCreated {
-                            request_id,
-                            session_id: s.id,
-                            title: s.title.or(title),
-                            model: s.model,
-                        })
-                        .await
-                    }
-                    Err(e) => self.send_error(&conn, &request_id, e.to_string()).await,
-                }
+                let model = self
+                    .selected_model
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone();
+                conn.send(DaemonMessage::SessionCreated {
+                    request_id,
+                    session_id: new_desktop_session_id(),
+                    title,
+                    model,
+                })
+                .await
             }
-            // Only this daemon's own (desktop_*) sessions — the panel shouldn't
-            // surface Telegram/email sessions in its switcher.
+            // Only desktop-platform sessions — the panel shouldn't surface
+            // Telegram/email sessions in its switcher. The gateway tags adapter
+            // sessions with `source == "desktop"`.
+            //
+            // ponytail: switcher *resume* replays history read-only; the gateway
+            // keys sessions by the originating chat_id (not exposed by the API),
+            // so continuing a resumed session forks a new thread. Pre-existing
+            // limitation — fix by persisting chat_ids panel-side if it matters.
             ClientMessage::SessionList { request_id } => match self.hermes.list_sessions().await {
                 Ok(all) => {
                     let data = all
                         .into_iter()
-                        .filter(|s| is_desktop_session(&s.id))
+                        .filter(|s| s.source.as_deref() == Some("desktop"))
                         .collect();
                     conn.send(DaemonMessage::Sessions { request_id, data })
                         .await
@@ -509,156 +394,11 @@ pub async fn run(config: Config, shutdown: CancellationToken) -> std::io::Result
 mod tests {
     use super::*;
     use crate::ipc::IpcClient;
-    use serde_json::json;
     use std::path::Path;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    /// End-to-end through the daemon core: a Chat IPC request creates a session
-    /// on (mock) Hermes, streams deltas back, and finishes with ChatComplete.
-    #[tokio::test]
-    async fn chat_request_bridges_to_hermes_and_streams_back() {
-        let server = MockServer::start().await;
-        // Session creation.
-        Mock::given(method("POST"))
-            .and(path("/api/sessions"))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
-                "object": "hermes.session",
-                "session": {"id": "desktop_xyz", "source": "api_server"}
-            })))
-            .mount(&server)
-            .await;
-        // Chat stream.
-        let sse = concat!(
-            "event: assistant.delta\ndata: {\"delta\":\"Hi\"}\n\n",
-            "event: assistant.completed\ndata: {\"content\":\"Hi there\"}\n\n",
-            "event: run.completed\ndata: {\"usage\":{\"t\":1}}\n\n",
-            "event: done\ndata: {}\n\n",
-        );
-        Mock::given(method("POST"))
-            .and(path("/api/sessions/desktop_xyz/chat/stream"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse),
-            )
-            .mount(&server)
-            .await;
-
-        let hermes = HermesClient::new(server.uri(), "k").unwrap();
-        let (btx, _) = broadcast::channel(16);
-        let handler = Arc::new(DaemonHandler::new(
-            hermes,
-            Arc::new(AtomicBool::new(true)),
-            None,
-            None,
-            Arc::new(BridgeHub::new()),
-        ));
-        let shutdown = CancellationToken::new();
-        let socket = std::env::temp_dir().join(format!(
-            "hermes-dms-daemon-test-{}.sock",
-            uuid::Uuid::new_v4()
-        ));
-        let ipc = IpcServer::new(handler, btx);
-        let run_socket = socket.clone();
-        let run_shutdown = shutdown.clone();
-        tokio::spawn(async move {
-            ipc.run(run_socket, run_shutdown).await.unwrap();
-        });
-
-        // Connect and send a chat with no session id (ephemeral).
-        let mut client = connect(&socket).await;
-        client
-            .send(&ClientMessage::Chat {
-                request_id: "r1".into(),
-                session_id: None,
-                message: "hi".into(),
-            })
-            .await
-            .unwrap();
-
-        let mut saw_delta = false;
-        let final_content = loop {
-            match client.next_message().await.unwrap() {
-                Some(DaemonMessage::Delta { content, .. }) => {
-                    saw_delta = true;
-                    assert_eq!(content, "Hi");
-                }
-                Some(DaemonMessage::ChatComplete { content, .. }) => break content,
-                Some(DaemonMessage::Error { message, .. }) => panic!("unexpected error: {message}"),
-                Some(_) => {}
-                None => panic!("connection closed early"),
-            }
-        };
-        assert!(saw_delta);
-        assert_eq!(final_content, "Hi there");
-        shutdown.cancel();
-    }
-
-    /// Hermes requires unique session titles: a fixed caller title (the panel's
-    /// `[Desktop] panel`) collides on the second create with a 400 invalid_title.
-    /// The daemon must recover by retrying with its unique id-based title — the
-    /// field bug that silently hung the panel.
-    #[tokio::test]
-    async fn new_session_recovers_from_title_collision() {
-        use std::collections::HashSet;
-        use std::sync::Mutex as StdMutex;
-        use wiremock::{Request, Respond};
-
-        // Mock Hermes: 201 on a first-seen title, 400 invalid_title on a repeat.
-        struct UniqueTitle {
-            seen: StdMutex<HashSet<String>>,
-        }
-        impl Respond for UniqueTitle {
-            fn respond(&self, req: &Request) -> ResponseTemplate {
-                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap_or_default();
-                let title = body["title"].as_str().unwrap_or_default().to_string();
-                let id = body["id"].as_str().unwrap_or("x").to_string();
-                if !self.seen.lock().unwrap().insert(title.clone()) {
-                    return ResponseTemplate::new(400).set_body_json(json!({
-                        "error": {
-                            "message": format!("Title '{title}' is already in use"),
-                            "type": "invalid_request_error",
-                            "code": "invalid_title"
-                        }
-                    }));
-                }
-                ResponseTemplate::new(201).set_body_json(json!({
-                    "object": "hermes.session",
-                    "session": {"id": id, "title": title, "source": "api_server"}
-                }))
-            }
-        }
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/sessions"))
-            .respond_with(UniqueTitle {
-                seen: StdMutex::new(HashSet::new()),
-            })
-            .mount(&server)
-            .await;
-
-        let hermes = HermesClient::new(server.uri(), "k").unwrap();
-        let handler = DaemonHandler::new(
-            hermes,
-            Arc::new(AtomicBool::new(true)),
-            None,
-            None,
-            Arc::new(BridgeHub::new()),
-        );
-
-        // First create with the panel's fixed title succeeds.
-        let a = handler.new_session(Some("[Desktop] panel")).await.unwrap();
-        // Second with the SAME fixed title 400s; without retry this would Err and
-        // the .unwrap() would panic. Recovery makes it succeed with a fresh id.
-        let b = handler.new_session(Some("[Desktop] panel")).await.unwrap();
-        assert_ne!(a.id, b.id);
-    }
 
     /// With a connected desktop adapter, a panel chat (has a chat id) routes
-    /// through the bridge — not the api_server REST path — and the adapter's
-    /// draft/send frames come back as Draft/ChatComplete.
+    /// through the bridge and the adapter's draft/send frames come back as
+    /// Draft/ChatComplete.
     #[tokio::test]
     async fn panel_chat_routes_through_bridge_when_adapter_connected() {
         // Hermes URL is unused on the bridge path; point it at a dead address.
@@ -727,6 +467,71 @@ mod tests {
             }
         };
         assert!(saw_draft);
+        assert_eq!(final_content, "Hello there");
+        shutdown.cancel();
+    }
+
+    /// A launcher chat (no session id) also routes through the bridge: the
+    /// daemon mints an ephemeral `desktop_` chat_id and relays the adapter's
+    /// final send as ChatComplete. (Notification delivery is a no-op here — no
+    /// session bus is wired in the test.)
+    #[tokio::test]
+    async fn launcher_chat_routes_through_bridge_with_minted_chat_id() {
+        let hermes = HermesClient::new("http://127.0.0.1:1", "k").unwrap();
+        let bridge = Arc::new(BridgeHub::new());
+        let mut inbound = bridge.inject_adapter();
+        let handler = Arc::new(DaemonHandler::new(
+            hermes,
+            Arc::new(AtomicBool::new(true)),
+            None,
+            None,
+            bridge.clone(),
+        ));
+        let shutdown = CancellationToken::new();
+        let socket = std::env::temp_dir().join(format!(
+            "hermes-dms-launcher-test-{}.sock",
+            uuid::Uuid::new_v4()
+        ));
+        let (btx, _) = broadcast::channel(16);
+        let ipc = IpcServer::new(handler, btx);
+        let run_socket = socket.clone();
+        let run_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            ipc.run(run_socket, run_shutdown).await.unwrap();
+        });
+
+        let mut client = connect(&socket).await;
+        client
+            .send(&ClientMessage::Chat {
+                request_id: "r1".into(),
+                session_id: None,
+                message: "hi".into(),
+            })
+            .await
+            .unwrap();
+
+        // The adapter receives the inbound message under a minted chat_id.
+        let chat_id = match inbound.recv().await.unwrap() {
+            crate::bridge::ToAdapter::Inbound { chat_id, text, .. } => {
+                assert_eq!(text, "hi");
+                assert!(chat_id.starts_with("desktop_"), "minted chat_id: {chat_id}");
+                chat_id
+            }
+        };
+
+        bridge.test_dispatch(FromAdapter::Send {
+            chat_id,
+            text: "Hello there".into(),
+        });
+
+        let final_content = loop {
+            match client.next_message().await.unwrap() {
+                Some(DaemonMessage::ChatComplete { content, .. }) => break content,
+                Some(DaemonMessage::Error { message, .. }) => panic!("unexpected error: {message}"),
+                Some(_) => {}
+                None => panic!("connection closed early"),
+            }
+        };
         assert_eq!(final_content, "Hello there");
         shutdown.cancel();
     }
