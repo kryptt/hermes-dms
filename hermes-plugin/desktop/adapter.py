@@ -38,7 +38,7 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_URL = "ws://10.20.0.3:9721/gateway"
+DEFAULT_URL = "ws://127.0.0.1:9721/gateway"
 
 
 class DesktopAdapter(BasePlatformAdapter):

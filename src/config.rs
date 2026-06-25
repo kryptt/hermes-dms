@@ -10,18 +10,22 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// rh-anine's VLAN20 address — bind the MCP server here, not 0.0.0.0, so the
-/// desktop tools are only reachable over the cluster-internal network.
-pub const DEFAULT_MCP_LISTEN_ADDR: &str = "10.20.0.3:9721";
+/// Loopback by default — bind the MCP server to localhost, not 0.0.0.0, so the
+/// desktop tools are only reachable locally. Override `mcp_listen_addr` to bind
+/// a cluster-internal interface instead (e.g. a host's VLAN address
+/// `10.20.0.3:9721`).
+pub const DEFAULT_MCP_LISTEN_ADDR: &str = "127.0.0.1:9721";
 
-/// Hermes API server default — the Traefik route `hermes.hr-home.xyz/direct`
-/// (stripPrefix → hermes:8642). Resolvable from the bare-metal workstation via
-/// OPNsense; authenticated with the API key. Client paths (`/api/...`,
-/// `/health`) are appended to this base, becoming `/direct/api/...` etc.
-pub const DEFAULT_HERMES_API_URL: &str = "https://hermes.hr-home.xyz/direct";
+/// Hermes API server default (placeholder). Override `hermes_api_url` to point
+/// at your own deployment — e.g. a Traefik route `https://hermes.example.com/direct`
+/// (stripPrefix → hermes:8642), authenticated with the API key. Client paths
+/// (`/api/...`, `/health`) are appended to this base, becoming `/direct/api/...`
+/// etc.
+pub const DEFAULT_HERMES_API_URL: &str = "https://hermes.example.com/direct";
 
-/// ollama-router default URL (Traefik LAN route) for the model picker.
-pub const DEFAULT_OLLAMA_ROUTER_URL: &str = "https://ollama.hr-home.xyz";
+/// ollama-router default URL (placeholder) for the model picker. Override
+/// `ollama_router_url` to point at your own LAN route.
+pub const DEFAULT_OLLAMA_ROUTER_URL: &str = "https://ollama.example.com";
 
 /// Resolved, validated configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,14 +220,14 @@ mod tests {
     #[test]
     fn full_toml_parses() {
         let toml = r#"
-            hermes_api_url = "http://10.43.0.5:8642"
+            hermes_api_url = "http://127.0.0.1:8642"
             hermes_api_key = "abc123"
-            mcp_listen_addr = "10.20.0.3:9721"
+            mcp_listen_addr = "127.0.0.1:9721"
             socket_path = "/run/user/1000/hermes-dms.sock"
         "#;
         let raw: RawConfig = toml::from_str(toml).unwrap();
         let cfg = Config::resolve(raw, None).unwrap();
-        assert_eq!(cfg.hermes_api_url, "http://10.43.0.5:8642");
+        assert_eq!(cfg.hermes_api_url, "http://127.0.0.1:8642");
         assert_eq!(cfg.hermes_api_key, "abc123");
         assert_eq!(
             cfg.socket_path,
