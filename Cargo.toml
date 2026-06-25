@@ -23,7 +23,7 @@ rmcp = { version = "1.7", features = ["server", "macros", "transport-streamable-
 schemars = "1"
 
 # HTTP / async runtime
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
@@ -31,6 +31,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # SSE parsing for the Hermes chat stream
 eventsource-stream = "0.2"
 futures-util = "0.3"
+# Streaming primitives (ReceiverStream) — same crate ollama-router uses.
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 # Desktop backends
 zbus = { version = "5", features = ["tokio"] }

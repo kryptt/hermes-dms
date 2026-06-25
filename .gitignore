@@ -1,2 +1,6 @@
 /target
 /.grepai
+
+# Python bytecode (the desktop platform plugin)
+__pycache__/
+*.pyc

@@ -8,6 +8,7 @@ use axum::extract::Request;
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use tokio::sync::broadcast;
@@ -15,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use super::tools::DesktopServer;
+use crate::bridge::{BridgeHub, gateway_ws_handler};
 use crate::ipc::protocol::DaemonMessage;
 
 /// Serve the MCP endpoint at `http://{addr}/mcp` until `shutdown` fires.
@@ -28,6 +30,7 @@ pub async fn serve(
     auth_token: Option<String>,
     dbus: Option<zbus::Connection>,
     toast_tx: broadcast::Sender<DaemonMessage>,
+    bridge: Arc<BridgeHub>,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
     let allowed_hosts = vec![
@@ -51,7 +54,13 @@ pub async fn serve(
         config,
     );
 
-    let mut router = axum::Router::new().nest_service("/mcp", service);
+    // `/gateway` (desktop platform adapter WS) shares this server + Bearer layer.
+    let gateway = axum::Router::new()
+        .route("/gateway", get(gateway_ws_handler))
+        .with_state(bridge);
+    let mut router = axum::Router::new()
+        .nest_service("/mcp", service)
+        .merge(gateway);
     if let Some(token) = auth_token {
         let expected = Arc::new(token);
         router = router.layer(middleware::from_fn(move |req, next| {
@@ -101,7 +110,8 @@ mod tests {
         // Bind to an ephemeral port; we can't pre-read it from serve(), so just
         // assert serve() returns promptly once cancelled.
         let s = shutdown.clone();
-        let handle = tokio::spawn(async move { serve(addr, None, None, tx, s).await });
+        let bridge = Arc::new(BridgeHub::new());
+        let handle = tokio::spawn(async move { serve(addr, None, None, tx, bridge, s).await });
         tokio::time::sleep(Duration::from_millis(100)).await;
         shutdown.cancel();
         let res = tokio::time::timeout(Duration::from_secs(5), handle).await;
@@ -113,7 +123,6 @@ mod tests {
     #[tokio::test]
     async fn bearer_middleware_gates_requests() {
         use axum::body::Body;
-        use axum::routing::get;
         use tower::ServiceExt;
 
         let expected = Arc::new("secret".to_string());

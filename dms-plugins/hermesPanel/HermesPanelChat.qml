@@ -9,11 +9,17 @@ Item {
 
     signal escapePressed()
 
-    // Index of the assistant message currently being streamed (-1 = none).
-    property int streamIndex: -1
     property bool modelMenuOpen: false
+    property bool sessionMenuOpen: false
 
-    // --- Header: title, connection status, new-conversation ---
+    function sessionLabel(s) {
+        if (s.preview && s.preview.trim())
+            return s.preview;
+        var t = s.title || s.id;
+        return t.replace(/^\[Desktop\]\s*/, "");
+    }
+
+    // --- Header: title, status, sessions, new-conversation ---
     Item {
         id: header
         anchors.top: parent.top
@@ -53,6 +59,31 @@ Item {
                 Layout.fillWidth: true
                 elide: Text.ElideRight
             }
+            // Session switcher.
+            Rectangle {
+                width: 26
+                height: 26
+                radius: 13
+                color: sessionsArea.containsMouse || chatRoot.sessionMenuOpen ? Theme.withAlpha(Theme.surfaceVariant, 0.3) : "transparent"
+                DankIcon {
+                    anchors.centerIn: parent
+                    name: "forum"
+                    color: Theme.surfaceVariantText
+                    size: 16
+                }
+                MouseArea {
+                    id: sessionsArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: {
+                        if (!chatRoot.sessionMenuOpen)
+                            HermesService.listSessions();
+                        chatRoot.sessionMenuOpen = !chatRoot.sessionMenuOpen;
+                        chatRoot.modelMenuOpen = false;
+                    }
+                }
+            }
+            // New conversation.
             Rectangle {
                 width: 26
                 height: 26
@@ -69,8 +100,7 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     onClicked: {
-                        messageModel.clear();
-                        chatRoot.streamIndex = -1;
+                        chatRoot.sessionMenuOpen = false;
                         HermesService.newConversation();
                     }
                 }
@@ -100,9 +130,6 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.max(44, inputField.contentHeight + 24)
 
-                // Focus the field when clicking anywhere in the row — the
-                // TextEdit's hit area excludes the padding. Below the TextEdit
-                // so direct clicks still place the caret / select text.
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.IBeamCursor
@@ -173,7 +200,7 @@ Item {
                             anchors.centerIn: parent
                             spacing: 4
                             StyledText {
-                                text: HermesService.selectedModel || "model"
+                                text: HermesService.activeModelLabel()
                                 font.pixelSize: 11
                                 color: Theme.surfaceVariantText
                                 anchors.verticalCenter: parent.verticalCenter
@@ -193,6 +220,7 @@ Item {
                                 if (!chatRoot.modelMenuOpen)
                                     HermesService.requestModels();
                                 chatRoot.modelMenuOpen = !chatRoot.modelMenuOpen;
+                                chatRoot.sessionMenuOpen = false;
                             }
                         }
                     }
@@ -274,7 +302,7 @@ Item {
         }
     }
 
-    // --- Messages (fills the space between header and input) ---
+    // --- Messages (bound to the persistent singleton model) ---
     Flickable {
         id: messageFlick
         anchors.top: header.bottom
@@ -309,9 +337,7 @@ Item {
                 spacing: 6
 
                 Repeater {
-                    model: ListModel {
-                        id: messageModel
-                    }
+                    model: HermesService.messages
 
                     Loader {
                         width: messagesContent.width
@@ -416,6 +442,86 @@ Item {
         }
     }
 
+    // Session switcher dropdown — opens below the header. Highlights the active
+    // session; picking one resumes it and replays its history.
+    Rectangle {
+        id: sessionMenu
+        visible: chatRoot.sessionMenuOpen
+        anchors.top: header.bottom
+        anchors.right: header.right
+        anchors.rightMargin: 8
+        width: 320
+        height: Math.min(360, Math.max(40, sessionList.contentHeight + 8))
+        radius: 12
+        color: Theme.surfaceContainerHigh
+        border.width: 1
+        border.color: Theme.outlineVariant
+        z: 30
+
+        StyledText {
+            visible: sessionList.count === 0
+            anchors.centerIn: parent
+            text: "No sessions yet"
+            color: Theme.surfaceVariantText
+            font.pixelSize: 12
+        }
+
+        ListView {
+            id: sessionList
+            anchors.fill: parent
+            anchors.margins: 4
+            clip: true
+            model: HermesService.sessions
+            delegate: Rectangle {
+                width: ListView.view.width
+                height: 44
+                radius: 8
+                color: sessRowArea.containsMouse ? Theme.withAlpha(Theme.surfaceVariant, 0.3) : "transparent"
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    spacing: 8
+                    Rectangle {
+                        width: 6
+                        height: 6
+                        radius: 3
+                        color: Theme.primary
+                        opacity: modelData.id === HermesService.sessionId ? 1 : 0
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+                        StyledText {
+                            text: chatRoot.sessionLabel(modelData)
+                            font.pixelSize: 12
+                            color: Theme.surfaceText
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                        StyledText {
+                            text: (modelData.model || "") + (modelData.message_count ? "  ·  " + modelData.message_count + " msgs" : "")
+                            font.pixelSize: 10
+                            color: Theme.surfaceVariantText
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
+                MouseArea {
+                    id: sessRowArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onClicked: {
+                        HermesService.resumeSession(modelData.id);
+                        chatRoot.sessionMenuOpen = false;
+                    }
+                }
+            }
+        }
+    }
+
     // Model picker dropdown — opens upward from the input pill. Green dot =
     // loaded in ollama-router; check = active. Picking one starts a fresh
     // session on that model (Hermes binds the model at session creation).
@@ -476,8 +582,6 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     onClicked: {
-                        messageModel.clear();
-                        chatRoot.streamIndex = -1;
                         HermesService.setModel(modelData.id);
                         chatRoot.modelMenuOpen = false;
                     }
@@ -495,48 +599,16 @@ Item {
     }
 
     // The popout force-focuses its own container via Qt.callLater on open,
-    // which would steal focus from the input. Re-grab it a tick later.
+    // which would steal focus from the input. Re-grab it a tick later, and
+    // snap the (restored) transcript to the bottom.
     Component.onCompleted: focusTimer.start()
     Timer {
         id: focusTimer
         interval: 80
         repeat: false
-        onTriggered: inputField.forceActiveFocus()
-    }
-
-    Connections {
-        target: HermesService
-
-        function onUserMessage(text) {
-            messageModel.append({ msgRole: "user", msgContent: text });
-        }
-        function onAssistantStarted() {
-            messageModel.append({ msgRole: "assistant", msgContent: "" });
-            chatRoot.streamIndex = messageModel.count - 1;
-        }
-        function onAssistantDelta(chunk) {
-            if (chatRoot.streamIndex < 0)
-                return;
-            var prev = messageModel.get(chatRoot.streamIndex).msgContent || "";
-            messageModel.setProperty(chatRoot.streamIndex, "msgContent", prev + chunk);
-        }
-        function onAssistantFinished(fullContent) {
-            if (chatRoot.streamIndex < 0) {
-                messageModel.append({ msgRole: "assistant", msgContent: fullContent });
-            } else {
-                var cur = messageModel.get(chatRoot.streamIndex).msgContent || "";
-                // Prefer the authoritative final text when nothing was streamed.
-                if (!cur && fullContent)
-                    messageModel.setProperty(chatRoot.streamIndex, "msgContent", fullContent);
-            }
-            chatRoot.streamIndex = -1;
-        }
-        function onErrorOccurred(message) {
-            chatRoot.streamIndex = -1;
-            messageModel.append({ msgRole: "error", msgContent: message });
-        }
-        function onSessionRefreshed() {
-            messageModel.append({ msgRole: "assistant", msgContent: "_Session refreshed._" });
+        onTriggered: {
+            inputField.forceActiveFocus();
+            messageFlick.scrollToEnd();
         }
     }
 }

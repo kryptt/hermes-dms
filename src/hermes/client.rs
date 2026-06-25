@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::sse::{ChatEvent, parse_event};
-use crate::ipc::protocol::SessionInfo;
+use crate::ipc::protocol::{ChatMessage, SessionInfo};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HermesError {
@@ -121,6 +121,46 @@ impl HermesClient {
             data: Vec<SessionInfo>,
         }
         Ok(resp.json::<Wrap>().await?.data)
+    }
+
+    /// `GET /api/sessions/{id}/messages` — the session's chat history. Keeps
+    /// only user/assistant rows with textual content (tool-call rows and
+    /// null/non-string content are dropped) for replay in the panel.
+    pub async fn get_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, HermesError> {
+        let resp = self
+            .http
+            .get(self.url(&format!("/api/sessions/{session_id}/messages")))
+            .bearer_auth(&self.api_key)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await?;
+        let resp = check_status(resp).await?;
+
+        #[derive(Deserialize)]
+        struct Wrap {
+            data: Vec<RawMsg>,
+        }
+        #[derive(Deserialize)]
+        struct RawMsg {
+            role: String,
+            // Hermes content is a string for user/assistant, null for some tool
+            // rows; keep it a Value so a non-string never errors the whole call.
+            #[serde(default)]
+            content: serde_json::Value,
+        }
+        let wrap: Wrap = resp.json().await?;
+        Ok(wrap
+            .data
+            .into_iter()
+            .filter(|m| m.role == "user" || m.role == "assistant")
+            .filter_map(|m| {
+                let content = m.content.as_str()?.trim().to_string();
+                (!content.is_empty()).then_some(ChatMessage {
+                    role: m.role,
+                    content,
+                })
+            })
+            .collect())
     }
 
     /// `POST /api/sessions/{id}/chat/stream` — send a message and stream the
@@ -271,6 +311,37 @@ mod tests {
         let sessions = client.list_sessions().await.unwrap();
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].id, "desktop_1_aaaa");
+    }
+
+    #[tokio::test]
+    async fn get_messages_keeps_user_assistant_text_only() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/sessions/desktop_1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "object": "list",
+                "session_id": "desktop_1",
+                "data": [
+                    {"role": "user", "content": "Hi"},
+                    {"role": "assistant", "content": "Hey. What's up?"},
+                    {"role": "tool", "content": null, "tool_name": "desktop_launch_app"},
+                    {"role": "assistant", "content": "   "},
+                    {"role": "user", "content": "bye"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let client = HermesClient::new(server.uri(), "k").unwrap();
+        let msgs = client.get_messages("desktop_1").await.unwrap();
+        // tool row (null) and whitespace-only assistant row are dropped.
+        let pairs: Vec<(&str, &str)> = msgs
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![("user", "Hi"), ("assistant", "Hey. What's up?"), ("user", "bye")]
+        );
     }
 
     #[tokio::test]

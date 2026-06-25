@@ -2,19 +2,23 @@
 //! REST client, and the health/reconnect loop together.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use tokio::sync::broadcast;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::Config;
+use crate::bridge::{BridgeHub, FromAdapter};
 use crate::desktop::notify;
 use crate::hermes::sse::ChatEvent;
-use crate::hermes::{DESKTOP_TITLE_PREFIX, HermesClient, HermesError, new_desktop_session_id};
-use crate::ipc::protocol::{ClientMessage, DaemonMessage, status};
+use crate::hermes::{
+    DESKTOP_TITLE_PREFIX, HermesClient, HermesError, is_desktop_session, new_desktop_session_id,
+};
+use crate::ipc::protocol::{ClientMessage, DaemonMessage, SessionInfo, status};
 use crate::ipc::server::{Conn, IpcServer, MessageHandler};
 use crate::ollama::OllamaRouterClient;
 
@@ -39,6 +43,10 @@ pub struct DaemonHandler {
     /// Model chosen via SetModel; passed when creating new sessions. None = use
     /// Hermes's configured default.
     selected_model: Arc<Mutex<Option<String>>>,
+    /// Desktop-platform bridge. When an adapter is connected, panel chats route
+    /// through it (full gateway pipeline: slash commands, model override, …)
+    /// instead of the api_server REST path.
+    bridge: Arc<BridgeHub>,
 }
 
 impl DaemonHandler {
@@ -47,6 +55,7 @@ impl DaemonHandler {
         hermes_up: Arc<AtomicBool>,
         dbus: Option<zbus::Connection>,
         ollama: Option<OllamaRouterClient>,
+        bridge: Arc<BridgeHub>,
     ) -> Self {
         Self {
             hermes,
@@ -54,6 +63,7 @@ impl DaemonHandler {
             dbus,
             ollama,
             selected_model: Arc::new(Mutex::new(None)),
+            bridge,
         }
     }
 
@@ -66,17 +76,35 @@ impl DaemonHandler {
     }
 
     /// Create a fresh desktop session and return its id.
-    async fn new_session(&self, title: Option<&str>) -> Result<String, HermesError> {
+    ///
+    /// The id-based title is always unique. A caller-provided title (e.g. the
+    /// panel's fixed `[Desktop] panel`) can collide with an existing session,
+    /// which Hermes rejects with a 400 `invalid_title`; we recover by retrying
+    /// once with the guaranteed-unique id title.
+    async fn new_session(&self, title: Option<&str>) -> Result<SessionInfo, HermesError> {
         let id = new_desktop_session_id();
-        let title = title
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("{DESKTOP_TITLE_PREFIX} {id}"));
-        let model = self.selected_model.lock().unwrap().clone();
-        let session = self
+        let unique = format!("{DESKTOP_TITLE_PREFIX} {id}");
+        let chosen = title.unwrap_or(unique.as_str());
+        let model = self
+            .selected_model
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        match self
             .hermes
-            .create_session(Some(&id), Some(&title), model.as_deref())
-            .await?;
-        Ok(session.id)
+            .create_session(Some(&id), Some(chosen), model.as_deref())
+            .await
+        {
+            Ok(session) => Ok(session),
+            Err(HermesError::Status { status: 400, body })
+                if body.contains("invalid_title") && chosen != unique =>
+            {
+                self.hermes
+                    .create_session(Some(&id), Some(&unique), model.as_deref())
+                    .await
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Handle a chat: resolve a session (create an ephemeral one if none given),
@@ -89,6 +117,18 @@ impl DaemonHandler {
         conn: &Conn,
         cancel: &CancellationToken,
     ) {
+        // Panel chat (has a conversation/chat id) routes through the desktop
+        // platform bridge when an adapter is connected — that's the path that
+        // gets slash commands (/model) and per-session model overrides. Falls
+        // back to the api_server REST path below when no adapter is connected.
+        if let Some(chat_id) = session_id.clone()
+            && self.bridge.is_connected()
+        {
+            return self
+                .chat_via_bridge(request_id, chat_id, message, conn, cancel)
+                .await;
+        }
+
         // No session id => launcher (ephemeral). Such responses are also
         // delivered as a desktop notification so they're visible even when the
         // panel isn't open.
@@ -96,7 +136,7 @@ impl DaemonHandler {
         let sid = match session_id {
             Some(s) => s,
             None => match self.new_session(None).await {
-                Ok(s) => s,
+                Ok(s) => s.id,
                 Err(e) => return self.send_error(conn, &request_id, e.to_string()).await,
             },
         };
@@ -113,6 +153,57 @@ impl DaemonHandler {
                 warn!(error = %e, "failed to deliver launcher response notification");
             }
         }
+    }
+
+    /// Route a panel chat through the desktop-platform bridge: push the message
+    /// to the adapter (keyed by `chat_id`) and relay its `draft`/`send` frames
+    /// back as `Draft`/`ChatComplete`. The adapter runs the message through the
+    /// full gateway pipeline, so `/model` etc. work here.
+    async fn chat_via_bridge(
+        &self,
+        request_id: String,
+        chat_id: String,
+        message: String,
+        conn: &Conn,
+        cancel: &CancellationToken,
+    ) {
+        let mut frames = UnboundedReceiverStream::new(self.bridge.open_chat(&chat_id));
+        if !self.bridge.send_inbound(&chat_id, &message, &request_id) {
+            self.bridge.close_chat(&chat_id);
+            return self
+                .send_error(conn, &request_id, "desktop platform offline".into())
+                .await;
+        }
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    self.send_error(conn, &request_id, "cancelled".into()).await;
+                    break;
+                }
+                item = frames.next() => match item {
+                    Some(FromAdapter::Draft { text, .. }) => {
+                        conn.send(DaemonMessage::Draft {
+                            request_id: request_id.clone(),
+                            content: text,
+                        }).await;
+                    }
+                    Some(FromAdapter::Send { text, .. }) => {
+                        conn.send(DaemonMessage::ChatComplete {
+                            request_id: request_id.clone(),
+                            content: text,
+                        }).await;
+                        break;
+                    }
+                    Some(FromAdapter::Typing { .. }) => {} // panel already shows busy
+                    None => {
+                        // Adapter disconnected mid-turn.
+                        self.send_error(conn, &request_id, "desktop platform disconnected".into()).await;
+                        break;
+                    }
+                }
+            }
+        }
+        self.bridge.close_chat(&chat_id);
     }
 
     /// Stream a chat turn, emitting Delta/ToolProgress/ChatComplete over `conn`.
@@ -132,7 +223,8 @@ impl DaemonHandler {
             Err(HermesError::SessionNotFound) if allow_reset_recovery => {
                 // The session was reset; mint a new one and retry once.
                 match self.new_session(None).await {
-                    Ok(new_id) => {
+                    Ok(s) => {
+                        let new_id = s.id;
                         conn.send(DaemonMessage::SessionReset {
                             request_id: Some(request_id.to_string()),
                             old_id: session_id,
@@ -221,21 +313,42 @@ impl MessageHandler for DaemonHandler {
             }
             ClientMessage::SessionCreate { request_id, title } => {
                 match self.new_session(title.as_deref()).await {
-                    Ok(id) => {
+                    Ok(s) => {
                         conn.send(DaemonMessage::SessionCreated {
                             request_id,
-                            session_id: id,
-                            title,
+                            session_id: s.id,
+                            title: s.title.or(title),
+                            model: s.model,
                         })
                         .await
                     }
                     Err(e) => self.send_error(&conn, &request_id, e.to_string()).await,
                 }
             }
+            // Only this daemon's own (desktop_*) sessions — the panel shouldn't
+            // surface Telegram/email sessions in its switcher.
             ClientMessage::SessionList { request_id } => match self.hermes.list_sessions().await {
-                Ok(data) => {
+                Ok(all) => {
+                    let data = all
+                        .into_iter()
+                        .filter(|s| is_desktop_session(&s.id))
+                        .collect();
                     conn.send(DaemonMessage::Sessions { request_id, data })
                         .await
+                }
+                Err(e) => self.send_error(&conn, &request_id, e.to_string()).await,
+            },
+            ClientMessage::SessionMessages {
+                request_id,
+                session_id,
+            } => match self.hermes.get_messages(&session_id).await {
+                Ok(data) => {
+                    conn.send(DaemonMessage::Messages {
+                        request_id,
+                        session_id,
+                        data,
+                    })
+                    .await
                 }
                 Err(e) => self.send_error(&conn, &request_id, e.to_string()).await,
             },
@@ -261,7 +374,11 @@ impl MessageHandler for DaemonHandler {
             ClientMessage::ModelList { request_id } => match &self.ollama {
                 Some(ollama) => match ollama.list_models().await {
                     Ok(mut data) => {
-                        let active = self.selected_model.lock().unwrap().clone();
+                        let active = self
+                            .selected_model
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .clone();
                         for m in &mut data {
                             m.active = active.as_deref() == Some(m.id.as_str());
                         }
@@ -275,7 +392,7 @@ impl MessageHandler for DaemonHandler {
                 }
             },
             ClientMessage::SetModel { model, .. } => {
-                *self.selected_model.lock().unwrap() = Some(model);
+                *self.selected_model.lock().unwrap_or_else(PoisonError::into_inner) = Some(model);
             }
             // Subscribe and Cancel are handled by the IPC server itself.
             ClientMessage::Subscribe { .. } | ClientMessage::Cancel { .. } => {}
@@ -344,14 +461,20 @@ pub async fn run(config: Config, shutdown: CancellationToken) -> std::io::Result
     ));
 
     // Background: MCP HTTP server (shares the broadcast channel for toasts).
+    // The desktop platform adapter (in the Hermes pod) connects to `/gateway`
+    // on the same HTTP server; the hub routes panel chats ↔ adapter frames.
+    // (U3 will hand this hub to the IPC handler to reroute panel chat through it.)
+    let bridge = Arc::new(BridgeHub::new());
+
     let mcp_addr = config.mcp_listen_addr;
     let mcp_auth = config.mcp_auth_token.clone();
     let mcp_tx = broadcast_tx.clone();
     let mcp_shutdown = shutdown.child_token();
     let mcp_dbus = dbus.clone();
+    let mcp_bridge = bridge.clone();
     tokio::spawn(async move {
         if let Err(e) =
-            crate::mcp::serve(mcp_addr, mcp_auth, mcp_dbus, mcp_tx, mcp_shutdown).await
+            crate::mcp::serve(mcp_addr, mcp_auth, mcp_dbus, mcp_tx, mcp_bridge, mcp_shutdown).await
         {
             error!(error = %e, "MCP server exited with error");
         }
@@ -365,7 +488,7 @@ pub async fn run(config: Config, shutdown: CancellationToken) -> std::io::Result
     });
 
     // Foreground: IPC server.
-    let handler = Arc::new(DaemonHandler::new(hermes, hermes_up, dbus, ollama));
+    let handler = Arc::new(DaemonHandler::new(hermes, hermes_up, dbus, ollama, bridge));
     let ipc = IpcServer::new(handler, broadcast_tx);
     ipc.run(config.socket_path.clone(), shutdown).await
 }
@@ -417,6 +540,7 @@ mod tests {
             Arc::new(AtomicBool::new(true)),
             None,
             None,
+            Arc::new(BridgeHub::new()),
         ));
         let shutdown = CancellationToken::new();
         let socket = std::env::temp_dir().join(format!(
@@ -456,6 +580,143 @@ mod tests {
         };
         assert!(saw_delta);
         assert_eq!(final_content, "Hi there");
+        shutdown.cancel();
+    }
+
+    /// Hermes requires unique session titles: a fixed caller title (the panel's
+    /// `[Desktop] panel`) collides on the second create with a 400 invalid_title.
+    /// The daemon must recover by retrying with its unique id-based title — the
+    /// field bug that silently hung the panel.
+    #[tokio::test]
+    async fn new_session_recovers_from_title_collision() {
+        use std::collections::HashSet;
+        use std::sync::Mutex as StdMutex;
+        use wiremock::{Request, Respond};
+
+        // Mock Hermes: 201 on a first-seen title, 400 invalid_title on a repeat.
+        struct UniqueTitle {
+            seen: StdMutex<HashSet<String>>,
+        }
+        impl Respond for UniqueTitle {
+            fn respond(&self, req: &Request) -> ResponseTemplate {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&req.body).unwrap_or_default();
+                let title = body["title"].as_str().unwrap_or_default().to_string();
+                let id = body["id"].as_str().unwrap_or("x").to_string();
+                if !self.seen.lock().unwrap().insert(title.clone()) {
+                    return ResponseTemplate::new(400).set_body_json(json!({
+                        "error": {
+                            "message": format!("Title '{title}' is already in use"),
+                            "type": "invalid_request_error",
+                            "code": "invalid_title"
+                        }
+                    }));
+                }
+                ResponseTemplate::new(201).set_body_json(json!({
+                    "object": "hermes.session",
+                    "session": {"id": id, "title": title, "source": "api_server"}
+                }))
+            }
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/sessions"))
+            .respond_with(UniqueTitle {
+                seen: StdMutex::new(HashSet::new()),
+            })
+            .mount(&server)
+            .await;
+
+        let hermes = HermesClient::new(server.uri(), "k").unwrap();
+        let handler = DaemonHandler::new(
+            hermes,
+            Arc::new(AtomicBool::new(true)),
+            None,
+            None,
+            Arc::new(BridgeHub::new()),
+        );
+
+        // First create with the panel's fixed title succeeds.
+        let a = handler.new_session(Some("[Desktop] panel")).await.unwrap();
+        // Second with the SAME fixed title 400s; without retry this would Err and
+        // the .unwrap() would panic. Recovery makes it succeed with a fresh id.
+        let b = handler.new_session(Some("[Desktop] panel")).await.unwrap();
+        assert_ne!(a.id, b.id);
+    }
+
+    /// With a connected desktop adapter, a panel chat (has a chat id) routes
+    /// through the bridge — not the api_server REST path — and the adapter's
+    /// draft/send frames come back as Draft/ChatComplete.
+    #[tokio::test]
+    async fn panel_chat_routes_through_bridge_when_adapter_connected() {
+        // Hermes URL is unused on the bridge path; point it at a dead address.
+        let hermes = HermesClient::new("http://127.0.0.1:1", "k").unwrap();
+        let bridge = Arc::new(BridgeHub::new());
+        let mut inbound = bridge.inject_adapter();
+        let handler = Arc::new(DaemonHandler::new(
+            hermes,
+            Arc::new(AtomicBool::new(true)),
+            None,
+            None,
+            bridge.clone(),
+        ));
+        let shutdown = CancellationToken::new();
+        let socket = std::env::temp_dir().join(format!(
+            "hermes-dms-bridge-test-{}.sock",
+            uuid::Uuid::new_v4()
+        ));
+        let (btx, _) = broadcast::channel(16);
+        let ipc = IpcServer::new(handler, btx);
+        let run_socket = socket.clone();
+        let run_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            ipc.run(run_socket, run_shutdown).await.unwrap();
+        });
+
+        let mut client = connect(&socket).await;
+        client
+            .send(&ClientMessage::Chat {
+                request_id: "r1".into(),
+                session_id: Some("desktop:1".into()),
+                message: "hi".into(),
+            })
+            .await
+            .unwrap();
+
+        // The adapter receives the inbound message for this chat id.
+        match inbound.recv().await.unwrap() {
+            crate::bridge::ToAdapter::Inbound { chat_id, text, .. } => {
+                assert_eq!(chat_id, "desktop:1");
+                assert_eq!(text, "hi");
+            }
+        }
+
+        // The adapter streams a draft then a final send.
+        bridge.test_dispatch(FromAdapter::Draft {
+            chat_id: "desktop:1".into(),
+            text: "He".into(),
+        });
+        bridge.test_dispatch(FromAdapter::Send {
+            chat_id: "desktop:1".into(),
+            text: "Hello there".into(),
+        });
+
+        let mut saw_draft = false;
+        let final_content = loop {
+            match client.next_message().await.unwrap() {
+                Some(DaemonMessage::Draft { content, .. }) => {
+                    saw_draft = true;
+                    assert_eq!(content, "He");
+                }
+                Some(DaemonMessage::ChatComplete { content, .. }) => break content,
+                Some(DaemonMessage::Error { message, .. }) => panic!("unexpected error: {message}"),
+                Some(_) => {}
+                None => panic!("connection closed early"),
+            }
+        };
+        assert!(saw_draft);
+        assert_eq!(final_content, "Hello there");
         shutdown.cancel();
     }
 

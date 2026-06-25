@@ -1,0 +1,20 @@
+name: desktop-platform
+label: Desktop
+kind: platform
+version: 1.0.0
+description: >
+  Desktop gateway adapter for Hermes Agent. Bridges the DankMaterialShell
+  panel on Niri (via the hermes-dms daemon's /gateway WebSocket) into the
+  Hermes gateway as a first-class platform — so the desktop gets slash
+  commands, per-session model overrides, and shared identity/memory, exactly
+  like Telegram. Dials OUT to the daemon; uses aiohttp (bundled with Hermes).
+author: kryptt
+requires_env:
+  - name: DESKTOP_BRIDGE_URL
+    description: "hermes-dms daemon /gateway WebSocket URL (e.g. ws://10.20.0.3:9721/gateway)"
+    prompt: "Bridge WebSocket URL"
+    password: false
+  - name: DESKTOP_BRIDGE_TOKEN
+    description: "Bearer token for the bridge (reuse the daemon's MCP token)"
+    prompt: "Bridge bearer token"
+    password: true

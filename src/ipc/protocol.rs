@@ -32,6 +32,11 @@ pub enum ClientMessage {
         request_id: String,
         session_id: String,
     },
+    /// Fetch the message history of a session (returns `Messages`).
+    SessionMessages {
+        request_id: String,
+        session_id: String,
+    },
     /// Cancel the in-flight chat for the given request id.
     Cancel { request_id: String },
     /// Query daemon/Hermes status (returns a `Status` event addressed to the
@@ -61,6 +66,7 @@ impl ClientMessage {
             | ClientMessage::SessionCreate { request_id, .. }
             | ClientMessage::SessionList { request_id }
             | ClientMessage::SessionResume { request_id, .. }
+            | ClientMessage::SessionMessages { request_id, .. }
             | ClientMessage::Cancel { request_id }
             | ClientMessage::Status { request_id }
             | ClientMessage::ModelList { request_id } => Some(request_id),
@@ -75,8 +81,12 @@ impl ClientMessage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonMessage {
-    /// Incremental assistant output for an in-flight chat.
+    /// Incremental assistant output for an in-flight chat (append to the
+    /// streaming bubble). Used by the api_server SSE path.
     Delta { request_id: String, content: String },
+    /// Growing *full* assistant text for an in-flight chat (replace the
+    /// streaming bubble). Used by the desktop-platform bridge (`send_draft`).
+    Draft { request_id: String, content: String },
     /// A tool invocation progress update during a chat run.
     ToolProgress {
         request_id: String,
@@ -91,11 +101,21 @@ pub enum DaemonMessage {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        /// The model Hermes bound to the new session (its default, or the
+        /// daemon's selected model). Lets the panel show the active model.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     /// Response to `SessionList` / `SessionResume`.
     Sessions {
         request_id: String,
         data: Vec<SessionInfo>,
+    },
+    /// Response to `SessionMessages`: a session's chat history.
+    Messages {
+        request_id: String,
+        session_id: String,
+        data: Vec<ChatMessage>,
     },
     /// The daemon transparently rotated a reset session; the panel should
     /// adopt `new_id` and show a subtle "session refreshed" indicator.
@@ -141,11 +161,32 @@ pub struct ModelInfo {
     pub active: bool,
 }
 
-/// Minimal session descriptor surfaced to clients. Hermes returns more fields;
-/// unknown keys are ignored on the wire.
+/// Session descriptor surfaced to clients. Hermes returns more fields than this;
+/// unknown keys are ignored. The optional fields are absent when this daemon
+/// mints a `SessionInfo` itself rather than parsing a Hermes response.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Unix seconds of last activity (Hermes `last_active`); used for ordering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_active: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
+}
+
+/// One chat message in a session's history (user/assistant text only).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
 }
 
 /// Connection status values used in `DaemonMessage::Status`.
